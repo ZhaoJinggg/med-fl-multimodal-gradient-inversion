@@ -45,6 +45,9 @@ ap.add_argument("--noise-factor", type=float, default=5.0, help="rank = singular
 ap.add_argument("--l1-thresh", type=float, default=5e-3)
 ap.add_argument("--l2-thresh", type=float, default=5e-3)
 ap.add_argument("--rank-cutoff", type=int, default=20)
+ap.add_argument("--exact", action="store_true",
+                help="reference: the update without float32 rounding (sum of the step gradients in float64), "
+                     "as with a double-precision client in the DAGER authors' FedAvg script")
 ap.add_argument("--res", type=int, default=224)
 ap.add_argument("--tag", default="")
 ap.add_argument("--out", default="runs/pilot/text")
@@ -72,6 +75,7 @@ def victim_update(x, ids, mask, y):
     m.load_state_dict(model.state_dict())
     m.train()
     w0 = {n: p.detach().clone() for n, p in m.named_parameters()}
+    acc = {n: torch.zeros_like(p, dtype=torch.float64) for n, p in m.named_parameters()}
     for _ in range(a.u):
         loss = bce(m(x, ids, mask), y)
         names = [n for n, _ in m.named_parameters()]
@@ -79,6 +83,9 @@ def victim_update(x, ids, mask, y):
         with torch.no_grad():
             for n, p, g in zip(names, m.parameters(), grads):
                 p -= lr_of(n) * g
+                acc[n] -= lr_of(n) * g.double()
+    if a.exact:
+        return {n: v.float() for n, v in acc.items()}
     return {n: (p.detach() - w0[n]) for n, p in m.named_parameters()}
 
 
@@ -162,6 +169,8 @@ def dager(dw, B):
     Bq = min(rank + (60 if a.u > 1 else 0), w.emb_size - a.rank_cutoff)
     R_Qs = [get_layer_decomp(g, B=Bq)[1].to(dev) for g in grads]
     _, res_ids, _, _ = filter_l1(args, w, R_Qs)
+    print(f"  rank {rank}, span size {Bq}, positions {len(res_ids)}, candidates per position: "
+          f"{[len(r) for r in res_ids[:5]]} ... max {max((len(r) for r in res_ids), default=0)}", flush=True)
     if len(res_ids) == 0 or len(res_ids[0]) == 0:
         return [], {"rank": int(rank), "B_used": int(Bq), "positions": 0}
     sents, scores, _, _ = filter_decoder(args, w, R_Qs, res_ids)
