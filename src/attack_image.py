@@ -39,6 +39,8 @@ ap.add_argument("--tv", type=float, default=1e-4)
 ap.add_argument("--bn", type=float, default=1e-2)
 ap.add_argument("--init", choices=["random", "mean", "near"], default="random",
                 help="mean: mean image of data outside the federation; near: true images + noise (control only)")
+ap.add_argument("--cos-w", type=float, default=1.0, help="weight of the matching loss (0 = BN statistics only)")
+ap.add_argument("--bn-mode", choices=["train", "eval"], default="train", help="eval: BN uses running statistics (control only)")
 ap.add_argument("--signed", action="store_true", help="use the sign of the gradient (Geiping et al.)")
 ap.add_argument("--restarts", type=int, default=1, help="keep the restart with the lowest final matching loss")
 ap.add_argument("--text", choices=["oracle"], default="oracle")
@@ -53,8 +55,16 @@ os.makedirs(out, exist_ok=True)
 data = PairData(a.res)
 split = load_seed(a.seed)
 model = FusionModel().to(dev)
-model.load_state_dict(torch.load(os.path.join(ROOT, a.glob), map_location=dev))
+if a.glob == "random":        # control: randomly initialized ResNet-18
+    import torchvision
+    r = torchvision.models.resnet18(weights=None); r.fc = torch.nn.Identity()
+    model.img = r.to(dev)
+elif a.glob != "pretrained":  # "pretrained" = round 0
+    model.load_state_dict(torch.load(os.path.join(ROOT, a.glob), map_location=dev))
 model.train()
+if a.bn_mode == "eval":
+    model.img.eval()
+    a.bn = 0.0
 
 img_names = [n for n, _ in model.named_parameters() if is_image_param(n)]
 bn_mods = [(n, m) for n, m in model.named_modules() if isinstance(m, torch.nn.BatchNorm2d)]
@@ -72,6 +82,8 @@ def victim_update(x, ids, mask, y):
     m = FusionModel().to(dev)
     m.load_state_dict(model.state_dict())
     m.train()
+    if a.bn_mode == "eval":
+        m.img.eval()
     w0 = {n: p.detach().clone() for n, p in m.named_parameters()}
     rs0 = {n: (mod.running_mean.clone(), mod.running_var.clone()) for n, mod in m.named_modules()
            if isinstance(mod, torch.nn.BatchNorm2d)}
@@ -181,7 +193,7 @@ def attack(x, y, h_steps, dw, tgt, m0, v, seed):
         opt.zero_grad()
         dw_sim, bn_avg = simulate(xd, y, h_steps, collect_bn=a.bn > 0)
         cos = cosine_dist(dw_sim, dw)
-        loss = cos + a.tv * tv(xd)
+        loss = a.cos_w * cos + a.tv * tv(xd)
         if a.bn > 0:
             loss = loss + a.bn * sum((bn_avg[k][0] - tgt[k][0]).norm() + (bn_avg[k][1] - tgt[k][1]).norm() for k in tgt)
         loss.backward()
@@ -223,7 +235,7 @@ for v in a.victims:
     xd, cos_final, curve, minutes = min(runs, key=lambda t: t[1])
     s, S = score(xd, x)
     rec = {"victim": v, "batch": len(rows), "u": a.u, "init": a.init, "text": a.text, "res": a.res,
-           "signed": a.signed, "opt_lr": a.opt_lr, "tv": a.tv, "bn": a.bn, "iters": a.iters, "restarts": a.restarts,
+           "signed": a.signed, "cos_w": a.cos_w, "bn_mode": a.bn_mode, "global": a.glob, "opt_lr": a.opt_lr, "tv": a.tv, "bn": a.bn, "iters": a.iters, "restarts": a.restarts,
            "ssim": round(s, 4), "m0": round(m0, 4), "cos": round(cos_final, 5), "cos_all": [round(t[1], 5) for t in runs],
            "minutes": round(sum(t[3] for t in runs), 2), "curve": curve}
     results.append(rec)
