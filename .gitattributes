@@ -1,0 +1,5 @@
+# LF everywhere so scripts run unchanged in WSL2 and on the server
+* text=auto eol=lf
+*.pt binary
+*.png binary
+*.npz binary

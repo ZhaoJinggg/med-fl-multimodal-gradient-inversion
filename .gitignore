@@ -1,0 +1,24 @@
+# environments and caches
+.venv/
+__pycache__/
+*.pyc
+
+# large or machine-specific outputs
+logs/
+runs/
+third_party/
+
+# weights: keep only the small feature-standardization file (part of the model definition)
+pretrained/*
+!pretrained/feature_norm_seed0.pt
+
+# data: keep the splits and the view-classifier outputs, not the images or reports
+data/*
+!data/splits/
+!data/iuxray/
+data/iuxray/*
+!data/iuxray/view_pred.csv
+!data/iuxray/view_scores.csv
+
+# the task list lives in the parent folder on Windows; the server copy is synced by hand
+progress.md
