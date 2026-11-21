@@ -29,7 +29,6 @@ from common import ROOT, FusionModel, PairData, bce, is_image_param, load_seed, 
 
 sys.path.insert(0, os.path.join(ROOT, "third_party", "dager"))
 from constants import config as dager_config  # noqa: E402
-from utils.filtering_decoder import filter_decoder  # noqa: E402
 from utils.functional import get_layer_decomp, get_top_B_in_span  # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -48,11 +47,29 @@ ap.add_argument("--rank-cutoff", type=int, default=20)
 ap.add_argument("--exact", action="store_true",
                 help="reference: the update without float32 rounding (sum of the step gradients in float64), "
                      "as with a double-precision client in the DAGER authors' FedAvg script")
+ap.add_argument("--max-beams", type=int, default=500, help="keep at most this many partial sequences per position (best span score)")
+ap.add_argument("--gpu-mem", type=float, default=0.25, help="hard limit on this process's share of GPU memory")
 ap.add_argument("--res", type=int, default=224)
 ap.add_argument("--tag", default="")
 ap.add_argument("--out", default="runs/pilot/text")
 a = ap.parse_args()
 dev = "cuda"
+torch.cuda.set_per_process_memory_fraction(a.gpu_mem)  # fail early instead of filling the card
+
+# DAGER's sequence search, with one addition: after each position only the max_beams partial sequences
+# with the best span score are kept. Without it, a loose threshold lets the number of sequences grow
+# without bound. The authors' file is loaded unchanged and the three lines are inserted here.
+_src = open(os.path.join(ROOT, "third_party", "dager", "utils", "filtering_decoder.py")).read()
+_anchor = "        scores = torch.cat(next_scores)\n"
+assert _src.count(_anchor) == 1
+_src = _src.replace(_anchor, _anchor + (
+    "        if len(batch) > MAX_BEAMS:\n"
+    "            _keep = torch.argsort(scores)[:MAX_BEAMS]\n"
+    "            batch, scores, is_batch_incorrect = batch[_keep], scores[_keep], is_batch_incorrect[_keep]\n"))
+_mod = types.ModuleType("filtering_decoder_capped")
+_mod.MAX_BEAMS = a.max_beams
+exec(compile(_src, "filtering_decoder_capped", "exec"), _mod.__dict__)
+filter_decoder = _mod.filter_decoder
 out = os.path.join(ROOT, a.out)
 os.makedirs(out, exist_ok=True)
 
