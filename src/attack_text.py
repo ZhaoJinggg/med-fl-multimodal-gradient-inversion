@@ -45,13 +45,15 @@ ap.add_argument("--noise-factor", type=float, default=5.0, help="rank = singular
 ap.add_argument("--l1-thresh", type=float, default=5e-3)
 ap.add_argument("--l2-thresh", type=float, default=5e-3)
 ap.add_argument("--rank-cutoff", type=int, default=20)
+ap.add_argument("--res", type=int, default=224)
+ap.add_argument("--tag", default="")
 ap.add_argument("--out", default="runs/pilot/text")
 a = ap.parse_args()
 dev = "cuda"
 out = os.path.join(ROOT, a.out)
 os.makedirs(out, exist_ok=True)
 
-data = PairData(224)
+data = PairData(a.res)
 split = load_seed(a.seed)
 tok = tokenizer()
 model = FusionModel().to(dev)
@@ -218,5 +220,5 @@ for v in a.victims:
     results.append(rec)
     print(f"victim {v} B={len(rows)} u={a.u}: ROUGE-L {rec['rougeL']:.3f} ROUGE-1 {rec['rouge1']:.3f} "
           f"recovered {len(recovered)}/{len(rows)} label acc {rec['label_acc']} rank {info['rank']} t={rec['minutes']}min", flush=True)
-    json.dump(rec, open(os.path.join(out, f"v{v}_B{len(rows)}_u{a.u}.json"), "w"), indent=1)
-print("SUMMARY", json.dumps([{k: r[k] for k in ("victim", "batch", "u", "rougeL", "rouge1", "n_recovered", "label_acc", "minutes")} for r in results]))
+    json.dump(rec, open(os.path.join(out, f"v{v}_B{len(rows)}_u{a.u}{a.tag}.json"), "w"), indent=1)
+print("SUMMARY" + a.tag, json.dumps([{k: r[k] for k in ("victim", "batch", "u", "rougeL", "rouge1", "n_recovered", "label_acc", "minutes")} for r in results]))
