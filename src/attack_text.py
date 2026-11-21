@@ -109,8 +109,14 @@ class Wrapper:
 
     @torch.no_grad()
     def get_layer_inputs(self, sentences, token_type_ids=None, attention_mask=None, layers=1):
-        h = gpt(input_ids=sentences, attention_mask=attention_mask, output_hidden_states=True).hidden_states
-        return [gpt.h[i + 1].ln_1(h[i + 1]) for i in range(layers)]
+        """Input of the second block. Only the first block is run (the search needs nothing deeper, and a
+        full forward pass of all 12 blocks costs about 12 times the time and memory). Right padding and
+        causal attention make the attention mask irrelevant for the positions before the padding."""
+        assert layers == 1
+        sentences = sentences.long()
+        pos = torch.arange(sentences.shape[1], device=sentences.device)
+        out = gpt.h[0](gpt.wte(sentences) + gpt.wpe(pos))
+        return [gpt.h[1].ln_1(out[0] if isinstance(out, tuple) else out)]
 
     def is_bert(self): return False
     def is_decoder(self): return True
@@ -196,6 +202,13 @@ def infer_labels(dw, texts_ids):
     # update = -lr * sum_i (p_i - y_i) z_i : coefficient > 0 means p_i < y_i, i.e. y_i = 1 (abnormal)
     return [int(c > 0) for c in coef.tolist()], coef.tolist()
 
+
+# check the shortcut above against the full model once
+with torch.no_grad():
+    _t = torch.randint(0, 50000, (2, 12), device=dev)
+    _ref = gpt.h[1].ln_1(gpt(input_ids=_t, output_hidden_states=True).hidden_states[1])
+    _err = (Wrapper(None).get_layer_inputs(_t)[0] - _ref).abs().max().item()
+    assert _err < 1e-4, _err
 
 scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=False)
 results = []
