@@ -13,10 +13,9 @@ WD=$!
 G=runs/pilot_r128/seed0_fedavg/global_round9.pt
 run() {  # tag, then extra arguments
   local tag=$1; shift
-  local mark=logs/done/$(echo "$tag $*" | tr -c "A-Za-z0-9._
--" "_")
+  local mark=logs/done/$(echo "$tag $*" | tr -c 'A-Za-z0-9._\n-' '_')
   if [ -e "$mark" ]; then echo "$tag | already done"; return; fi
-  timeout 90 python -u src/attack_text.py --global $G --seed 0 --lr-img 0.01 --lr-txt 1e-2 --victims 0 1 2 --batch 8 --res 128 \
+  timeout 240 python -u src/attack_text.py --global $G --seed 0 --lr-img 0.01 --lr-txt 1e-2 --victims 0 1 2 --batch 8 --res 128 \
       --parallel 1000 --tag "$tag" --out runs/pilot/text128 "$@" 2>&1 \
       | grep --line-buffered -E "^victim|Error|Traceback" | cut -c1-200 | sed "s/^/$tag | /"
   local rc=${PIPESTATUS[0]}
