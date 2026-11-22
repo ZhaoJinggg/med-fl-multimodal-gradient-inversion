@@ -51,6 +51,9 @@ ap.add_argument("--max-beams", type=int, default=500, help="keep at most this ma
 ap.add_argument("--gpu-mem", type=float, default=0.25, help="hard limit on this process's share of GPU memory")
 ap.add_argument("--parallel", type=int, default=100,
                 help="sequences per forward pass of the search (DAGER uses 1000; large values draw full GPU power)")
+ap.add_argument("--idle", type=float, default=0.0,
+                help="seconds of pause per second of search work (2 = the GPU works a third of the time); "
+                     "lowers the average power on a card that cannot hold full load")
 ap.add_argument("--res", type=int, default=224)
 ap.add_argument("--tag", default="")
 ap.add_argument("--out", default="runs/pilot/text")
@@ -132,6 +135,12 @@ class Wrapper:
         full forward pass of all 12 blocks costs about 12 times the time and memory). Right padding and
         causal attention make the attention mask irrelevant for the positions before the padding."""
         assert layers == 1
+        if a.idle > 0:  # pause in proportion to the work done since the previous call
+            torch.cuda.synchronize()
+            now = time.time()
+            if getattr(self, "_t", None) is not None:
+                time.sleep(min((now - self._t) * a.idle, 5.0))
+            self._t = time.time()
         sentences = sentences.long()
         pos = torch.arange(sentences.shape[1], device=sentences.device)
         out = gpt.h[0](gpt.wte(sentences) + gpt.wpe(pos))
