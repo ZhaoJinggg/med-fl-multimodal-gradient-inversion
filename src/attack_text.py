@@ -49,6 +49,8 @@ ap.add_argument("--exact", action="store_true",
                      "as with a double-precision client in the DAGER authors' FedAvg script")
 ap.add_argument("--max-beams", type=int, default=500, help="keep at most this many partial sequences per position (best span score)")
 ap.add_argument("--gpu-mem", type=float, default=0.25, help="hard limit on this process's share of GPU memory")
+ap.add_argument("--parallel", type=int, default=100,
+                help="sequences per forward pass of the search (DAGER uses 1000; large values draw full GPU power)")
 ap.add_argument("--res", type=int, default=224)
 ap.add_argument("--tag", default="")
 ap.add_argument("--out", default="runs/pilot/text")
@@ -176,7 +178,7 @@ def dager(dw, B):
     """Recover the batch's texts from the GPT-2 part of the update (as token id lists)."""
     args = types.SimpleNamespace(
         batch_size=B, l1_span_thresh=a.l1_thresh, l2_span_thresh=a.l2_thresh, dist_norm="l2", max_len=63,
-        device=dev, pad="right", parallel=1000, defense_noise=None, distinct_thresh=0.7, reduce_incorrect=0,
+        device=dev, pad="right", parallel=a.parallel, defense_noise=None, distinct_thresh=0.7, reduce_incorrect=0,
         l2_std_thrs=5, n_layers=2, rank_cutoff=a.rank_cutoff)
     w = Wrapper(args)
     # DAGER's layer ids 4 and 16 are the c_attn weights of the first two blocks
