@@ -59,7 +59,7 @@ def report(name, ok, msg):
 def run_new(out, extra, u):
     torch.manual_seed(0)   # FusionModel() draws the head at random; --global pretrained keeps that head
     res = AI.main(COMMON + ["--u", str(u), "--out", out] + extra)
-    name = f"v0_B2_u{u}_mean"
+    name = f"s0_v0_B2_u{u}_mean"
     return res[0], torch.load(os.path.join(out, name + ".pt")), json.load(open(os.path.join(out, name + ".json")))
 
 
@@ -79,7 +79,7 @@ def run_ref(out, u, extra=()):
     torch.manual_seed(0)
     exec(compile(src, "attack_image_ref", "exec"), {"__name__": "__main__", "_DATA": DATA})
     sys.argv = argv
-    name = f"v0_B2_u{u}_mean"
+    name = f"s0_v0_B2_u{u}_mean"
     return torch.load(os.path.join(out, name + ".pt")), json.load(open(os.path.join(out, name + ".json")))
 
 

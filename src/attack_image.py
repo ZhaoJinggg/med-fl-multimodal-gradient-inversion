@@ -34,7 +34,7 @@ or one file (single victim only). Relative paths are taken from the repository r
 result carries (victim, batch, u, seed, proto, mu, scaffold_option, bn_stats) must match this run.
 
 Every cell must be written to its own --out directory (score_images.py groups the mismatched control by
-directory and tag, and the file name v{v}_B{B}_u{u}_{init}{tag} does not carry protocol or condition).
+directory and tag unless --scope cell is used, and the file name s{seed}_v{v}_B{B}_u{u}_{init}{tag} does not carry protocol or condition).
 
 usage: python src/attack_image.py --global runs/pilot/seed0_fedavg/global_round9.pt --seed 0
           --victims 0 1 2 --batch 8 --u 1 --iters 10000 --text oracle --out runs/pilot/attacks
@@ -539,7 +539,7 @@ def main(argv=None):
                "labels": y_list, "device": dev}
         results.append(rec)
         print(f"victim {v} FINAL ssim={s:.4f} (m0={m0:.4f}) cos={cos_final:.4f}{a.tag}", flush=True)
-        name = f"v{v}_B{len(rows)}_u{a.u}_{a.init}{a.tag}"
+        name = f"s{a.seed}_v{v}_B{len(rows)}_u{a.u}_{a.init}{a.tag}"
         jpath = os.path.join(out, name + ".json")
         if os.path.exists(jpath):  # never overwrite the result of another cell
             old = json.load(open(jpath))
