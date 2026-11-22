@@ -12,7 +12,7 @@ while true; do
   echo "$(date +%T),${line// /}" >> "$LOG"
   t=$(echo "$line" | cut -d, -f1 | tr -d ' '); p=$(echo "$line" | cut -d, -f2 | tr -d ' ' | cut -d. -f1)
   if [ "$t" -ge "$TMAX" ] || [ "$p" -ge "$PMAX" ]; then
-    for pid in $(pgrep -f "python.* src/(attack_|control_|text_diag|identify)"; pgrep -f "scripts/(run_pilot|tune_tv|attrib|pilot_b1_long|push_b8|push_b24|text_grid|text_grid2|text_cal)\.sh"); do kill "$pid" 2>/dev/null; done
+    for pid in $(pgrep -f "python.* src/(attack_|control_|text_diag|identify)"; pgrep -f "scripts/(run_pilot|tune_tv|attrib|pilot_b1_long|push_b8|push_b24|text_grid|text_grid2|text_cal|gate_image|gate_text)\.sh"); do kill "$pid" 2>/dev/null; done
     echo "$(date +%T),TRIPPED at ${t} C ${p} W: attack processes stopped" >> "$LOG"
     exit 1
   fi
