@@ -72,12 +72,15 @@ def out_dir(a):
 
 
 @torch.no_grad()
-def accuracy(data, m, rows, dev):
+def accuracy(data, m, rows, dev, idle=0.0):
     m.eval()
     correct = 0
     for i in range(0, len(rows), 64):
+        tb = time.time()
         x, ids, mask, y = data.batch(rows[i:i + 64], dev)
         correct += ((m(x, ids, mask) > 0).float() == y).sum().item()
+        if idle > 0 and str(dev) != "cpu":   # same pause as in training (FedBN evaluates ten client models)
+            time.sleep(min((time.time() - tb) * idle, 5.0))
     return correct / len(rows)
 
 
@@ -174,14 +177,14 @@ def run(a, data=None):
             for k in sorted(clients):
                 ev.load_state_dict(loc_cl[k], strict=False)
                 for s in eval_rows:
-                    accs[s].append(accuracy(data, ev, eval_rows[s], dev))
+                    accs[s].append(accuracy(data, ev, eval_rows[s], dev, a.idle))
             del ev
             rec.update({"val_acc": sum(accs["val"]) / len(clients), "test_acc": sum(accs["test"]) / len(clients),
                         "test_acc_clients": accs["test"],
-                        "test_acc_server_state": accuracy(data, model, eval_rows["test"], dev)})
+                        "test_acc_server_state": accuracy(data, model, eval_rows["test"], dev, a.idle)})
         else:
-            rec.update({"val_acc": accuracy(data, model, eval_rows["val"], dev),
-                        "test_acc": accuracy(data, model, eval_rows["test"], dev)})
+            rec.update({"val_acc": accuracy(data, model, eval_rows["val"], dev, a.idle),
+                        "test_acc": accuracy(data, model, eval_rows["test"], dev, a.idle)})
         rec["seconds"] = round(time.time() - t0, 1)
         log.append(rec)
         print(rec, flush=True)
