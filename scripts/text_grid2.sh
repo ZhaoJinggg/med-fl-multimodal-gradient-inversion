@@ -8,7 +8,7 @@ set -u
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate mmgia
 cd ~/jacob/mmgia
 mkdir -p logs/done
-bash scripts/gpu_watchdog.sh 120 9999 >/dev/null 2>&1 &
+bash scripts/gpu_watchdog.sh ${WD_T:-120} ${WD_P:-9999} >/dev/null 2>&1 &
 WD=$!
 G=runs/pilot_r128/seed0_fedavg/global_round9.pt
 run() {  # tag, then extra arguments
