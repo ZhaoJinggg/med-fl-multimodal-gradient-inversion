@@ -5,9 +5,9 @@
 cd "$(dirname "$0")/.." || exit 1
 TMAX=${1:-72}; PMAX=${2:-280}
 LOG=logs/gpu_watch.csv
-echo "time,temp_C,power_W,util_pct,mem_MiB  (limits ${TMAX} C, ${PMAX} W)" >> "$LOG"
+echo "time,temp_C,power_W,util_pct,mem_MiB,fan_pct  (limits ${TMAX} C, ${PMAX} W)" >> "$LOG"
 while true; do
-  line=$(nvidia-smi --query-gpu=temperature.gpu,power.draw,utilization.gpu,memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+  line=$(nvidia-smi --query-gpu=temperature.gpu,power.draw,utilization.gpu,memory.used,fan.speed --format=csv,noheader,nounits 2>/dev/null | head -1)
   if [ -z "$line" ]; then echo "$(date +%T),GPU NOT FOUND" >> "$LOG"; exit 2; fi
   echo "$(date +%T),${line// /}" >> "$LOG"
   t=$(echo "$line" | cut -d, -f1 | tr -d ' '); p=$(echo "$line" | cut -d, -f2 | tr -d ' ' | cut -d. -f1)

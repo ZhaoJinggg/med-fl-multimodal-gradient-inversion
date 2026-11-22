@@ -7,18 +7,24 @@
 set -u
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate mmgia
 cd ~/jacob/mmgia
+mkdir -p logs/done
 bash scripts/gpu_watchdog.sh 120 9999 >/dev/null 2>&1 &
 WD=$!
 G=runs/pilot_r128/seed0_fedavg/global_round9.pt
 run() {  # tag, then extra arguments
   local tag=$1; shift
+  local mark=logs/done/$(echo "$tag $*" | tr -c "A-Za-z0-9._
+-" "_")
+  if [ -e "$mark" ]; then echo "$tag | already done"; return; fi
   timeout 90 python -u src/attack_text.py --global $G --seed 0 --lr-img 0.01 --lr-txt 1e-2 --victims 0 1 2 --batch 8 --res 128 \
       --parallel 1000 --tag "$tag" --out runs/pilot/text128 "$@" 2>&1 \
       | grep --line-buffered -E "^victim|Error|Traceback" | cut -c1-200 | sed "s/^/$tag | /"
-  echo "$tag | exit ${PIPESTATUS[0]} | $(date +%T)"
+  local rc=${PIPESTATUS[0]}
+  [ "$rc" = 0 ] && touch "$mark"
+  echo "$tag | exit $rc | $(date +%T)"
 }
 echo "PART 1 baseline $(date +%T)"
-python -u src/text_baseline.py --seed 0 --victims 0 1 2 --batch 8 2>&1 | grep -E "^victim|^MEAN|Error|Traceback" | cut -c1-200
+[ -e runs/pilot/text128/baseline_seed0_B8.json ] || python -u src/text_baseline.py --seed 0 --victims 0 1 2 --batch 8 2>&1 | grep -E "^victim|^MEAN|Error|Traceback" | cut -c1-200
 echo "PART 2 grid $(date +%T)"
 for nf in 1.5 2 3; do for l2 in 1e-2 1.5e-2 2e-2; do
   run _g2_nf${nf}_l1_5e-2_l2_${l2} --u 1 --noise-factor $nf --l1-thresh 5e-2 --l2-thresh $l2
