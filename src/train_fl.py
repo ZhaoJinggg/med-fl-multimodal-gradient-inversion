@@ -54,6 +54,8 @@ def get_args(argv=None):
     ap.add_argument("--aux-clients", type=int, nargs="*", default=None,
                     help="clients whose c_k is saved (default: the victim clients of the split)")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--idle", type=float, default=0.0,
+                    help="seconds of pause per second of client training (2 = the GPU works a third of the time)")
     # smoke tests only
     ap.add_argument("--clients", type=int, nargs="*", default=None, help="use only these clients")
     ap.add_argument("--pairs-per-client", type=int, default=None, help="use only the first n pairs of each client")
@@ -114,6 +116,7 @@ def run(a, data=None):
         avg, dc_sum, first = {}, {}, True
         anchor = {nm: p.detach().clone() for nm, p in model.named_parameters()} if a.proto == "fedprox" else None
         for wi, k in zip(w, sorted(clients)):
+            tc = time.time()
             local = copy.deepcopy(model).train()
             if local_keys:
                 local.load_state_dict(loc_cl[k], strict=False)
@@ -131,6 +134,9 @@ def run(a, data=None):
             for rows in batches:
                 x, ids, mask, y = data.batch(rows, dev)
                 P.local_step(local, bce(local(x, ids, mask), y), a.lr_img, a.lr_txt, proto, anchor=anchor)
+            if a.idle > 0 and str(dev) != "cpu":   # pause after each client; changes no result (thermal limit of the GPU)
+                torch.cuda.synchronize()
+                time.sleep(min((time.time() - tc) * a.idle, 30.0))
             if a.proto == "scaffold":
                 dc = P.scaffold_dc(proto, w0, local, len(batches), a.lr_img, a.lr_txt, grad_w0)
                 # the client applies dc exactly as the server accumulates it, so both hold the same c_k

@@ -22,7 +22,7 @@ step() {  # name, then command
 echo "DRY_START $(date +%T)"
 # 1. warm-ups (9 rounds, only round 9 saved)
 for p in fedavg fedprox scaffold fedbn; do
-  step warm_$p python -u src/train_fl.py --proto $p --seed 0 --rounds 9 --lr-img 0.01 --lr-txt 1e-2 --res 128 --out $FL --save 9 --aux-clients $V
+  step warm_$p python -u src/train_fl.py --proto $p --seed 0 --rounds 9 --lr-img 0.01 --lr-txt 1e-2 --res 128 --out $FL --save 9 --aux-clients $V --idle 2
   grep -hE "round +9|round 9|test" logs/dry_warm_$p.log | tail -2 | cut -c1-160
 done
 G() { case $1 in fedavg) echo $FL/seed0_fedavg;; fedprox) echo $FL/seed0_fedprox_mu1;; scaffold) echo $FL/seed0_scaffold_optII;; fedbn) echo $FL/seed0_fedbn;; esac; }
