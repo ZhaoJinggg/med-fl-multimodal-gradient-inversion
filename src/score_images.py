@@ -1,49 +1,49 @@
-"""Score saved image-attack results: identification score A (primary), top-1 and top-1% rates, SSIM, PSNR,
-LPIPS, the mean-image control, and the mismatched control. CPU only.
+"""Score saved image-attack results: identification score A (primary, matching-free max rule), top-1 and
+top-1% shares, the old matched score A_matched, SSIM, PSNR, LPIPS, the mean-image control, the mismatched
+control, and the full cross matrix A(v, w) of every group. CPU only.
 
-Writes one tidy row per result file (= one victim under one setting) to OUT and one row per matched pair
-to OUT with the suffix "_pairs" (column "kind" = attack | mean_image | mismatched).
+Outputs (OUT = --out):
+  OUT              one row per result file (= one victim under one setting)
+  OUT_pairs.csv    one row per original: kind = attack (max-rule rank and A, plus the matched pair's
+                   A_matched, SSIM, PSNR, LPIPS), mean_image, and mismatched (one row per original of v and
+                   partner w: max-rule rank and A of v's original against w's reconstruction batch)
+  OUT_cross.csv    the cross matrix of every group, long format: one row per (v, w), including the diagonal
+                   A(v, v) = the real score; columns = group fields + v_seed, v_victim, v_file, w_seed,
+                   w_victim, w_file, A, top1, top1pct. src/analyze.py reads it (gate, floor tests).
 
 Definitions (paper, Section "Evaluation Metrics"):
-  * Matching: the reconstructions of a batch are matched to the originals by the one-to-one assignment
-    (Hungarian, scipy.optimize.linear_sum_assignment) that maximizes the mean SSIM.
-  * Identification score: for a reconstruction matched to original x_i, all candidates (the radiographs of
-    the dataset at the attack resolution, minus the OTHER images of the attacked batch; N = 3,199 - B + 1)
-    are ordered by decreasing SSIM to the reconstruction; r_i is the rank of x_i (ties at mid-rank) and
-    A_i = 1 - (r_i - 1) / (N - 1). The victim's A is the mean over its batch. top1 = share with r_i = 1,
-    top1pct = share with r_i <= 0.01 N (as in src/identify.py).
+  * Primary score A (no matching): for the reconstruction batch x^_1..x^_B every candidate radiograph c gets
+    s(c) = max_j SSIM(c, x^_j). For original x_i the candidates are all radiographs of the dataset at the
+    attack resolution without the OTHER originals of the attacked batch (N = 3,199 - B + 1); r_i is the rank
+    of x_i by decreasing s (ties at mid-rank) and A_i = 1 - (r_i - 1) / (N - 1). The victim's A is the mean
+    over its B originals; top1 = share of r_i = 1, top1pct = share of r_i <= 0.01 N. At B = 1 the max rule
+    and the matched rule coincide.
+  * A_matched / top1_matched / top1pct_matched (old rule, for the record): reconstructions matched to the
+    originals by the one-to-one assignment maximizing mean SSIM (Hungarian), each original ranked by SSIM to
+    its matched reconstruction (identical to src/identify.py). This assignment is still used for SSIM, PSNR
+    and LPIPS, which are means over the matched pairs.
   * SSIM: skimage.metrics.structural_similarity(data_range=1, gaussian_weights=True, sigma=1.5,
-    use_sample_covariance=False) - the 11 x 11 Gaussian window of the paper. Here it is computed by a
-    vectorized torch implementation (see `ssim_vs_pool`) that reproduces skimage: skimage filters with
-    reflect padding and then crops (win_size - 1) / 2 = 5 pixels on each side before averaging, and the
-    Gaussian kernel has radius 5, so no cropped-in pixel depends on the padding and a 'valid' filter gives
-    the same numbers up to float rounding. Every file also records `ssim_check_maxdiff`, the largest
-    difference between the torch and the skimage SSIM on its B x B (original, reconstruction) matrix.
-  * PSNR = 10 log10(1 / MSE) per matched pair (data range 1); LPIPS = AlexNet LPIPS (lpips package) with the
-    gray image replicated to 3 channels and scaled to [-1, 1]; both are means over the matched pairs.
-  * Mean-image control ("_mean_image" columns): every reconstruction is replaced by the mean of the
-    validation + test images (the public mean radiograph that initializes the attack) at the attack
-    resolution, and the same scores are computed (the matching is then trivial).
-  * Mismatched control ("_mismatched" columns; the paper's definition): the ORIGINALS of victim v are held
-    fixed and scored against the RECONSTRUCTIONS of every other victim w of the same group: rec_w is matched to
-    v's originals by the same max-mean-SSIM assignment, and each original of v is ranked among the candidate
-    pool of v's real score (the dataset minus the other images of v's batch) by SSIM to its matched rec_w.
-    A_mismatched(v) is the mean of these A over all w; A_mismatched_sd is their spread over partners, and
-    n_partners their number. GROUP: same (directory, batch size, u, init, tag, resolution); the seed is NOT
-    required to match, so the 20 test victims of one factor combination form one group. A group with a single
-    victim gets NaN. Because v's images are fixed, A(v) - A_mismatched(v) removes how typical v's radiographs
-    are. The per-partner pair rows are in the pairs file (kind = mismatched, partner_file, partner_victim). The
-    paper's zero point m_0 for images is the mean of A_mismatched over the FedAvg, u = 1, recovered-text cell.
-  * A_mismatched_next (old rule, kept for comparison because it is free): the reconstructions of v scored
-    against the originals of the next victim (by victim id, cyclic) of the same group AND seed, pool minus the
-    other images of that victim's batch (kind = mismatched_next in the pairs file).
-  * LPIPS is not computed for the two mismatched controls (NaN in the pairs file).
+    use_sample_covariance=False), computed by a vectorized torch implementation (`SSIMPool`): skimage filters
+    with reflect padding and crops 5 px before averaging; the Gaussian kernel has radius 5, so a 'valid'
+    filter gives the same numbers (max difference 5.6e-15 in float64). `ssim_check_maxdiff` records the
+    largest difference to skimage on each file's B x B (original, reconstruction) matrix.
+  * PSNR = 10 log10(1 / MSE) (data range 1); LPIPS = AlexNet LPIPS (lpips package), gray image replicated to
+    3 channels and scaled to [-1, 1].
+  * Mean-image control ("_mean_image"): the public mean image (validation + test pairs) repeated B times as
+    the reconstruction batch, same max rule (s(c) is then SSIM(c, mean image)).
+  * Mismatched control: for victim v and every other victim w of the same group, A(v, w) = the max-rule
+    score of v's originals (candidate pool of v) against w's reconstruction batch. A_mismatched(v) = mean
+    over w != v; A_mismatched_sd = spread over partners; n_partners. LPIPS is not computed for controls.
+  * GROUP (control and cross matrix): same (directory, protocol, condition, batch, u, init, tag,
+    resolution); victims are identified by (seed, victim) and may come from different seeds, so the 20 test
+    victims of one factor combination form one group. A victim's own reconstructions from another protocol,
+    u, text condition or tag never enter its control. A group with one victim gets NaN.
 
-Identifiers: victim, batch, u, init and tag come from the file name v{victim}_B{batch}_u{u}_{init}{tag};
-the seed from the JSON key "seed" if present, else --seed, else "seed<k>" in the JSON "global" path, else
-"seed<k>" in the directory path (column seed_source says which); the protocol from the JSON key
-"protocol" if present, else from "seed<k>_<protocol>" in the global path. All scalar JSON fields are copied
-with the prefix "json_".
+Identifiers: victim, batch, u, init and tag from the file name v{victim}_B{batch}_u{u}_{init}{tag}; seed from
+JSON "seed", else --seed, else "seed<k>" in the JSON "global" path, else in the directory path (column
+seed_source); protocol from JSON "proto" or "protocol", else "seed<k>_<protocol>" in the global path, else
+--protocol (default empty); condition from JSON "condition", else JSON "text" (old files: "oracle" -> oracle),
+else empty. All scalar JSON fields are copied with the prefix "json_".
 
 usage:
   CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=8 python src/score_images.py runs/pilot/push_b8 \
@@ -69,6 +69,9 @@ os.environ.setdefault("TORCH_HOME", os.path.join(ROOT, "pretrained", "torch"))  
 
 NAME_RE = re.compile(r"^v(\d+)_B(\d+)_u(\d+)_(random|mean|near)(.*)$")
 C1, C2 = 0.01 ** 2, 0.03 ** 2
+GROUP_FIELDS = ("dir", "protocol", "condition", "batch", "u", "init", "tag", "res")
+COND_ALIASES = {"oracle": "oracle", "recovered": "recovered", "rec": "recovered", "none": "none",
+                "notext": "none", "no_text": "none", "no-text": "none"}
 
 
 # ---------------------------------------------------------------- SSIM (vectorized, skimage-equivalent)
@@ -90,8 +93,7 @@ class SSIMPool:
     def __init__(self, pool, dtype=torch.float64, chunk=400):
         self.dtype, self.chunk = dtype, chunk
         self.pool = pool.to(dtype)
-        R = pool.shape[-1]
-        self.G = gauss_band(R, dtype=dtype)
+        self.G = gauss_band(pool.shape[-1], dtype=dtype)
         self.mu, self.var = [], []
         for s in range(0, len(self.pool), chunk):
             p = self.pool[s:s + chunk]
@@ -101,15 +103,6 @@ class SSIMPool:
 
     def filt(self, x):
         return self.G @ x @ self.G.T
-
-    def ssim_pair(self, a, b):
-        """SSIM of two single images (R, R), same implementation."""
-        a, b = a.to(self.dtype), b.to(self.dtype)
-        ma, mb = self.filt(a), self.filt(b)
-        va, vb = self.filt(a * a) - ma * ma, self.filt(b * b) - mb * mb
-        vab = self.filt(a * b) - ma * mb
-        S = (2 * ma * mb + C1) * (2 * vab + C2) / ((ma * ma + mb * mb + C1) * (va + vb + C2))
-        return float(S.mean())
 
     def ssim_vs_pool(self, q):
         """SSIM of query q (R, R) with every candidate; returns a float64 numpy array (N,)."""
@@ -162,20 +155,33 @@ def pool_indices(res_data, orig, studies):
 
 
 # ---------------------------------------------------------------- scores
+def rank_of(s, true, idx_batch):
+    """Mid-rank of candidate `true` by decreasing s among the pool minus the other originals of the batch."""
+    keep = np.ones(len(s), bool)
+    keep[idx_batch] = False
+    others = s[keep]
+    r = 1 + (others > s[true]).sum() + 0.5 * (others == s[true]).sum()
+    n = int(keep.sum()) + 1
+    return 1 - (r - 1) / (n - 1), float(r), n
+
+
 def rank_scores(svecs, idx_batch, assign):
-    """A and r of each matched pair. svecs[j] = SSIM of reconstruction j to every candidate;
-    assign = list of (i, j): original i of the scored batch matched to reconstruction j."""
-    out = []
-    for i, j in assign:
-        s = svecs[j]
-        true = idx_batch[i]
-        keep = np.ones(len(s), bool)
-        keep[idx_batch] = False
-        others = s[keep]
-        r = 1 + (others > s[true]).sum() + 0.5 * (others == s[true]).sum()
-        n = keep.sum() + 1
-        out.append((1 - (r - 1) / (n - 1), float(r), int(n)))
-    return out
+    """Old matched rule for given (i, j) pairs: original i ranked by SSIM to reconstruction j. Kept because
+    scratch scripts import it."""
+    return [rank_of(svecs[j], idx_batch[i], idx_batch) for i, j in assign]
+
+
+def max_rule(svecs, idx_batch):
+    """Primary score: s(c) = max_j SSIM(c, rec_j); per original (A_i, r_i, N)."""
+    s = np.max(np.stack(svecs), 0)
+    return [rank_of(s, true, idx_batch) for true in idx_batch]
+
+
+def summarize(ranks):
+    A = np.array([a for a, _, _ in ranks])
+    R = np.array([r for _, r, _ in ranks])
+    n = ranks[0][2]
+    return {"A": float(A.mean()), "top1": float(np.mean(R == 1)), "top1pct": float(np.mean(R <= 0.01 * n))}
 
 
 def psnr(a, b):
@@ -195,34 +201,26 @@ class LPIPS:
 
     @torch.no_grad()
     def __call__(self, a, b):
-        """a, b: (R, R) in [0, 1] -> LPIPS distance (float), NaN if disabled."""
         if self.model is None:
             return float("nan")
-        t = lambda x: (x.float() * 2 - 1).view(1, 1, *x.shape).repeat(1, 3, 1, 1)
+        t = lambda x: (x.float() * 2 - 1).view(1, 1, *x.shape).repeat(1, 3, 1, 1)  # noqa: E731
         return float(self.model(t(a), t(b)).item())
 
 
-def score_set(rec, orig_scored, idx_scored, svecs, lp, kind):
-    """Match rec (B,R,R) to orig_scored (B,R,R) by max mean SSIM, then all metrics; returns summary, pairs."""
+def matched(rec, orig, idx, svecs, lp):
+    """Old rule: Hungarian assignment maximizing mean SSIM; per original i: (j, A, r, N, ssim, psnr, lpips)."""
     B = len(rec)
-    S = np.array([[svecs[j][idx_scored[i]] for j in range(B)] for i in range(B)])  # S[i, j] = SSIM(orig i, rec j)
+    S = np.array([[svecs[j][idx[i]] for j in range(B)] for i in range(B)])  # S[i, j] = SSIM(orig i, rec j)
     ri, ci = linear_sum_assignment(-S)
-    assign = list(zip(ri.tolist(), ci.tolist()))
-    rk = rank_scores(svecs, idx_scored, assign)
-    pairs = []
-    for (i, j), (a_, r_, n_) in zip(assign, rk):
-        pairs.append({"kind": kind, "pair": i, "rec_index": j, "pool_index": idx_scored[i], "rank": r_, "N": n_,
-                      "A": a_, "ssim": S[i, j], "psnr": psnr(rec[j], orig_scored[i]), "lpips": lp(rec[j], orig_scored[i])})
-    n = pairs[0]["N"]
-    R = np.array([p["rank"] for p in pairs])
-    summ = {"A": np.mean([p["A"] for p in pairs]), "top1": float(np.mean(R == 1)), "top1pct": float(np.mean(R <= 0.01 * n)),
-            "ssim": float(np.mean([p["ssim"] for p in pairs])), "psnr": float(np.mean([p["psnr"] for p in pairs])),
-            "lpips": float(np.mean([p["lpips"] for p in pairs]))}
-    return summ, pairs, S
+    out = {}
+    for i, j in zip(ri.tolist(), ci.tolist()):
+        (a_, r_, n_), = rank_scores(svecs, idx, [(i, j)])
+        out[i] = (j, a_, r_, n_, S[i, j], psnr(rec[j], orig[i]), lp(rec[j], orig[i]))
+    return out, S
 
 
 # ---------------------------------------------------------------- identifiers
-def identifiers(path, meta, cli_seed):
+def identifiers(path, meta, cli_seed, cli_protocol):
     stem = os.path.splitext(os.path.basename(path))[0]
     m = NAME_RE.match(stem)
     if not m:
@@ -242,8 +240,12 @@ def identifiers(path, meta, cli_seed):
         row["seed"], row["seed_source"] = int(dm.group(1)), "dir"
     else:
         row["seed"], row["seed_source"] = "", "unknown"
-    row["protocol"] = meta.get("protocol", gm.group(2).lower() if gm and gm.group(2) else "")
-    row["condition"] = meta.get("condition", meta.get("text", ""))
+    proto = meta.get("proto", meta.get("protocol"))
+    if proto is None:
+        proto = gm.group(2) if gm and gm.group(2) else cli_protocol
+    row["protocol"] = str(proto).lower()
+    cond = str(meta.get("condition", meta.get("text", ""))).strip().lower()
+    row["condition"] = COND_ALIASES.get(cond, cond)
     return row
 
 
@@ -288,6 +290,7 @@ def main():
     ap.add_argument("inputs", nargs="*", help="result directories, .pt files, or quoted globs")
     ap.add_argument("--out", default="runs/scores/images.csv")
     ap.add_argument("--seed", type=int, default=None, help="seed for files whose JSON has none")
+    ap.add_argument("--protocol", default="", help="protocol for files whose JSON and global path have none")
     ap.add_argument("--no-lpips", action="store_true")
     ap.add_argument("--no-skimage-check", action="store_true", help="skip the per-file skimage cross-check")
     ap.add_argument("--dtype", choices=["float64", "float32"], default="float64")
@@ -307,32 +310,39 @@ def main():
     lp = LPIPS(not a.no_lpips)
     by_res, done = {}, []
     t_all = time.time()
-    # phase 1: attack scores and mean-image control; keep each file's SSIM-to-pool vectors
+    # phase 1: own scores and mean-image control; keep each file's SSIM-to-pool vectors
     for path in files:
         t0 = time.time()
         d = torch.load(path, map_location="cpu")
         jp = os.path.splitext(path)[0] + ".json"
         meta = json.load(open(jp)) if os.path.exists(jp) else {}
-        row = identifiers(path, meta, a.seed)
+        row = identifiers(path, meta, a.seed, a.protocol)
         rec = d["rec"][:, 0].double().clamp(0, 1)
         orig = d["orig"][:, 0].double()
         B, res = len(rec), rec.shape[-1]
-        if B != row["batch"]:
-            print(f"WARNING {row['file']}: batch {B} in tensor, {row['batch']} in name", file=sys.stderr)
+        if B != row["batch"] or len(orig) != B:
+            raise SystemExit(f"{row['file']}: {B} reconstructions, {len(orig)} originals, batch {row['batch']} in name")
         if res not in by_res:
             by_res[res] = Resolution(res, dtype, a.chunk)
         rd = by_res[res]
         idx, how = pool_indices(rd, orig, d.get("studies"))
         svecs = [rd.pool.ssim_vs_pool(rec[j]) for j in range(B)]
         orig_pool = rd.x[idx]
-        summ, pairs, S = score_set(rec, orig_pool, idx, svecs, lp, "attack")
-        row.update({"res": res, "N": pairs[0]["N"], "pool_match": how})
-        row.update(summ)
-        row["ranks"] = json.dumps([p["rank"] for p in pairs])
-        # mean-image control: the same mean image for every original, so its SSIM vector is shared
-        mvecs = [rd.s_mean] * B
-        msumm, mpairs, _ = score_set(rd.mean_img.expand(B, res, res), orig_pool, idx, mvecs, lp, "mean_image")
-        row.update({k + "_mean_image": v for k, v in msumm.items()})
+        own = max_rule(svecs, idx)
+        mt, S = matched(rec, orig_pool, idx, svecs, lp)
+        mm = max_rule([rd.s_mean], idx)
+        row.update({"res": res, "N": own[0][2], "pool_match": how})
+        row.update(summarize(own))
+        row["ranks"] = json.dumps([r for _, r, _ in own])
+        mtr = [(mt[i][1], mt[i][2], mt[i][3]) for i in range(B)]
+        row.update({k + "_matched": v for k, v in summarize(mtr).items()})
+        row["ranks_matched"] = json.dumps([r for _, r, _ in mtr])
+        row.update(ssim=float(np.mean([mt[i][4] for i in range(B)])), psnr=float(np.mean([mt[i][5] for i in range(B)])),
+                   lpips=float(np.mean([mt[i][6] for i in range(B)])))
+        row.update({k + "_mean_image": v for k, v in summarize(mm).items()})
+        row.update(ssim_mean_image=float(np.mean([rd.s_mean[i] for i in idx])),
+                   psnr_mean_image=float(np.mean([psnr(rd.mean_img, o) for o in orig_pool])),
+                   lpips_mean_image=float(np.mean([lp(rd.mean_img, o) for o in orig_pool])))
         if not a.no_skimage_check:
             Ssk = np.array([[sk_ssim(orig[i].numpy(), rec[j].numpy()) for j in range(B)] for i in range(B)])
             row["ssim_check_maxdiff"] = float(np.abs(Ssk - S).max())
@@ -340,73 +350,61 @@ def main():
         row["seconds"] = round(time.time() - t0, 1)
         studies = list(d.get("studies", [""] * B))
         labels = d.get("labels", torch.full((B,), float("nan"))).tolist()
-        for p in pairs + mpairs:
-            p.update({"file": row["file"], "victim": row["victim"], "seed": row["seed"], "study": studies[p["pair"]],
-                      "label": labels[p["pair"]], "partner_file": ""})
-        done.append({"row": row, "pairs": pairs + mpairs, "svecs": svecs, "rec": rec, "idx": idx, "orig": orig_pool,
-                     "studies": studies, "labels": labels})
-        print(f"{row['file']}: A={row['A']:.4f} top1={row['top1']:.3f} ssim={row['ssim']:.4f} psnr={row['psnr']:.2f} "
-              f"lpips={row['lpips']:.4f} | mean image A={row['A_mean_image']:.4f} | {row['seconds']}s", flush=True)
-    # phase 2: mismatched controls (reuse the SSIM-to-pool vectors of phase 1, so they cost no SSIM evaluations;
-    # LPIPS is not computed for them)
-    no_lp = lambda x, y: float("nan")  # noqa: E731
-    groups, groups_next = {}, {}
+        base = {"file": row["file"], "seed": row["seed"], "victim": row["victim"]}
+        pairs = []
+        for i in range(B):
+            j, a_m, r_m, _, s_, p_, l_ = mt[i]
+            pairs.append({**base, "kind": "attack", "pair": i, "study": studies[i], "label": labels[i], "pool_index": idx[i],
+                          "rank": own[i][1], "N": own[i][2], "A": own[i][0], "rec_index_matched": j, "rank_matched": r_m,
+                          "A_matched": a_m, "ssim": s_, "psnr": p_, "lpips": l_})
+            pairs.append({**base, "kind": "mean_image", "pair": i, "study": studies[i], "label": labels[i], "pool_index": idx[i],
+                          "rank": mm[i][1], "N": mm[i][2], "A": mm[i][0], "ssim": rd.s_mean[idx[i]]})
+        done.append({"row": row, "pairs": pairs, "svecs": svecs, "idx": idx, "studies": studies, "labels": labels})
+        print(f"{row['file']}: A={row['A']:.4f} top1={row['top1']:.3f} A_matched={row['A_matched']:.4f} "
+              f"ssim={row['ssim']:.4f} psnr={row['psnr']:.2f} lpips={row['lpips']:.4f} | mean image A={row['A_mean_image']:.4f} "
+              f"| {row['seconds']}s", flush=True)
+    # phase 2: cross matrix A(v, w) per group (reuses the SSIM-to-pool vectors: no new SSIM evaluations)
+    groups, cross = {}, []
     for k, e in enumerate(done):
-        r = e["row"]
-        groups.setdefault((r["dir"], r["batch"], r["u"], r["init"], r["tag"], r["res"]), []).append(k)
-        groups_next.setdefault((r["dir"], r["batch"], r["u"], r["init"], r["tag"], r["res"], r["seed"]), []).append(k)
-    order = lambda k: (str(done[k]["row"]["seed"]), done[k]["row"]["victim"])  # noqa: E731
-    # (a) A_mismatched: originals of v held fixed, scored against the reconstructions of every other victim w
-    for key, ks in groups.items():
-        ks = sorted(ks, key=order)
+        groups.setdefault(tuple(e["row"][f] for f in GROUP_FIELDS), []).append(k)
+    for gid, (key, ks) in enumerate(groups.items()):
+        ks = sorted(ks, key=lambda k: (str(done[k]["row"]["seed"]), done[k]["row"]["victim"]))
+        vids = [(str(done[k]["row"]["seed"]), done[k]["row"]["victim"]) for k in ks]
+        if len(set(vids)) != len(vids):
+            raise SystemExit(f"group {key}: the same (seed, victim) appears twice")
         for k in ks:
-            e = done[k]
-            per = []
+            e, per = done[k], []
             for m in ks:
+                w = done[m]
+                assert len(w["svecs"]) == len(e["idx"]), f"batch size differs: {w['row']['file']} vs {e['row']['file']}"
+                rk = max_rule(w["svecs"], e["idx"])
+                sm = summarize(rk)
+                cross.append({"group": gid, **dict(zip(GROUP_FIELDS, key)), "v_seed": e["row"]["seed"],
+                              "v_victim": e["row"]["victim"], "v_file": e["row"]["file"], "w_seed": w["row"]["seed"],
+                              "w_victim": w["row"]["victim"], "w_file": w["row"]["file"], "diagonal": m == k, **sm})
                 if m == k:
                     continue
-                w = done[m]
-                assert len(w["rec"]) == len(e["idx"]), f"batch size differs: {w['row']['file']} vs {e['row']['file']}"
-                summ, pairs, _ = score_set(w["rec"], e["orig"], e["idx"], w["svecs"], no_lp, "mismatched")
-                per.append(summ)
-                for p in pairs:
-                    p.update({"file": e["row"]["file"], "victim": e["row"]["victim"], "seed": e["row"]["seed"],
-                              "study": e["studies"][p["pair"]], "label": e["labels"][p["pair"]],
-                              "partner_file": w["row"]["file"], "partner_victim": w["row"]["victim"]})
-                e["pairs"] += pairs
-            e["row"]["n_partners"] = len(per)
-            for k2 in ("A", "top1", "top1pct", "ssim", "psnr"):
-                e["row"][k2 + "_mismatched"] = float(np.mean([s[k2] for s in per])) if per else float("nan")
-            e["row"]["A_mismatched_sd"] = float(np.std([s["A"] for s in per], ddof=1)) if len(per) > 1 else float("nan")
-    # (b) A_mismatched_next (old single-partner rule, kept for comparison): reconstructions of v scored against
-    # the originals of the next victim of the same seed (cyclic), pool minus the other images of that batch
-    for key, ks in groups_next.items():
-        ks = sorted(ks, key=order)
-        for n, k in enumerate(ks):
-            e = done[k]
-            if len(ks) < 2:
-                e["row"].update({"partner_next": "", "A_mismatched_next": float("nan")})
-                continue
-            w = done[ks[(n + 1) % len(ks)]]
-            summ, pairs, _ = score_set(e["rec"], w["orig"], w["idx"], e["svecs"], no_lp, "mismatched_next")
-            e["row"]["partner_next"] = w["row"]["file"]
-            e["row"]["A_mismatched_next"] = summ["A"]
-            for p in pairs:
-                p.update({"file": e["row"]["file"], "victim": e["row"]["victim"], "seed": e["row"]["seed"],
-                          "study": w["studies"][p["pair"]], "label": w["labels"][p["pair"]],
-                          "partner_file": w["row"]["file"], "partner_victim": w["row"]["victim"]})
-            e["pairs"] += pairs
+                per.append(sm["A"])
+                for i, (a_, r_, n_) in enumerate(rk):
+                    e["pairs"].append({"file": e["row"]["file"], "seed": e["row"]["seed"], "victim": e["row"]["victim"],
+                                       "kind": "mismatched", "pair": i, "study": e["studies"][i], "label": e["labels"][i],
+                                       "pool_index": e["idx"][i], "rank": r_, "N": n_, "A": a_,
+                                       "partner_file": w["row"]["file"], "partner_seed": w["row"]["seed"],
+                                       "partner_victim": w["row"]["victim"]})
+            e["row"].update(group=gid, n_partners=len(per), A_mismatched=float(np.mean(per)) if per else float("nan"),
+                            A_mismatched_sd=float(np.std(per, ddof=1)) if len(per) > 1 else float("nan"))
     out = a.out if os.path.isabs(a.out) else os.path.join(ROOT, a.out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
+    stem = os.path.splitext(out)[0]
     write_csv(out, [e["row"] for e in done])
-    write_csv(os.path.splitext(out)[0] + "_pairs.csv", [p for e in done for p in e["pairs"]])
-    print(f"wrote {out} ({len(done)} files) and its _pairs.csv in {time.time() - t_all:.0f}s")
+    write_csv(stem + "_pairs.csv", [p for e in done for p in e["pairs"]])
+    write_csv(stem + "_cross.csv", cross)
+    print(f"wrote {out} ({len(done)} files), {stem}_pairs.csv, {stem}_cross.csv in {time.time() - t_all:.0f}s")
     for key, ks in groups.items():
         rows = [done[k]["row"] for k in ks]
-        mm = [r.get("A_mismatched", float("nan")) for r in rows]
-        print(f"group dir={key[0]} B={key[1]} u={key[2]} init={key[3]} tag={key[4]!r} res={key[5]}: n={len(rows)} "
-              f"mean A={np.mean([r['A'] for r in rows]):.4f} mean A_mismatched={np.nanmean(mm) if len(rows) > 1 else float('nan'):.4f} "
-              f"mean A_mean_image={np.mean([r['A_mean_image'] for r in rows]):.4f}")
+        print(f"group {dict(zip(GROUP_FIELDS, key))}: n={len(rows)} mean A={np.mean([r['A'] for r in rows]):.4f} "
+              f"A_mismatched={np.nanmean([r['A_mismatched'] for r in rows]) if len(rows) > 1 else float('nan'):.4f} "
+              f"A_matched={np.mean([r['A_matched'] for r in rows]):.4f} A_mean_image={np.mean([r['A_mean_image'] for r in rows]):.4f}")
 
 
 if __name__ == "__main__":

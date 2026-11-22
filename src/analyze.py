@@ -1,72 +1,77 @@
 """Decision rules of the paper's hypothesis table (Table "Hypothesis Testing Framework and Decision Rules",
 Sections "Evaluation Metrics" and "Hypothesis Testing") and the calibration gate.
 
-INPUT: one or more tidy CSVs with one row per victim, cell and modality:
+INPUT
+  Tidy CSVs, one row per victim, cell and modality:
     seed, victim, protocol, u, modality, value          (required)
     condition                                           (optional; recovered | oracle | none; default recovered)
-    m0                                                  (optional; the victim's zero-point score, see below)
-  - victims are paired by (seed, victim);
-  - protocol: fedavg | fedprox | scaffold | fedbn (case-insensitive);
-  - modality: "image" (value = identification score A) and "text" (value = ROUGE-L) are the primary
-    metrics. Any other modality name (e.g. "image_ssim") gets the H1 comparisons only and is labelled
-    "reported, decides nothing" (the registered H1 test on SSIM);
-  - m0: per-victim zero point (image: A_mismatched of src/score_images.py, the victim's originals scored
-    against the reconstructions of all other victims of the cell; text: ROUGE-L of the most frequent
-    training report against the victim's texts). The modality's m_0 is the mean of m0 over the victims of
-    the reference cell (FedAvg, u = 1, recovered); --m0 image=0.5 overrides it.
+    m0                                                  (optional; the victim's zero-point score)
+  - victims are paired by (seed, victim); protocol: fedavg | fedprox | scaffold | fedbn;
+  - modality "image" (value = identification score A, max rule) and "text" (value = ROUGE-L) are primary.
+    Any other modality (e.g. "image_ssim") gets the H1 comparisons only, "reported, decides nothing";
+  - m0: image = A_mismatched of src/score_images.py (the victim's originals against the reconstructions of
+    every other victim of the cell); text = ROUGE-L of the most frequent training report against the
+    victim's texts. The modality's m_0 = mean of m0 over the reference cell (FedAvg, u = 1, recovered);
+    --m0 image=0.5 overrides it.
+  Cross matrices (--cross, the *_cross.csv of src/score_images.py): A(v, w) of v's originals against w's
+  reconstructions, per cell (protocol, condition, u, batch). Needed for the image floor tests and the
+  reference-cell test; restricted to the victims of the tidy cell before testing.
   `python src/analyze.py tidy-images scores.csv` converts a src/score_images.py CSV (value = A, m0 = A_mismatched).
 
-RULES IMPLEMENTED (literal reading of the paper):
-  f_P(u, v) = (m_P(u, v) - m_0) / (mean_v m_FedAvg(1, v) - m_0), one denominator per modality, taken from
-     FedAvg, u = 1, recovered text.
-  Floor: a group mean of f <= 0.1. H2-H5 are decided only in cells whose FedAvg group mean of f (recovered
-     condition, same modality and u) lies above the floor; a comparison in a floor cell is "not decidable",
-     leaves its Holm family, and the hypothesis is decided on the remaining comparisons ("undecided" for a
-     modality if none remains). H1 (on the primary metric, not on f) has no floor rule.
-  Differences are always treatment - reference: H1 m(u) - m(1); H2a f(rec) - f(oracle); H2b f(rec) - f(none);
+RULES IMPLEMENTED (literal reading of the paper as revised on 2026-11-22)
+  Permutation test of a cross matrix M (n victims): statistic T = mean_v M[v, v]; null = mean_v M[v, pi(v)]
+     over all permutations pi (exact for n <= 8, else 100,000 Monte Carlo draws with seed 0 plus the
+     identity); p = share of permutations with a statistic >= T (identity included).
+  Reference-cell test: image f is computed only if the FedAvg, u = 1, recovered cell passes the permutation
+     test (p <= 0.05); otherwise every image decision (H1 included) is "not tested". Without a cross matrix
+     for that cell f is computed and the output says the test was not run.
+  f_P(u, v) = (m_P(u, v) - m_0) / (mean_v m_FedAvg(1, v) - m_0), one denominator per modality.
+  Floor (H2-H5 only): a comparison is decidable only if its FedAvg cell (recovered condition, same modality
+     and u) is above the floor by a test at one-sided alpha = 0.05: images, the permutation test on that
+     cell's cross matrix; text, a one-sided Wilcoxon signed-rank test of the victims' ROUGE-L against their m0.
+     A cell that fails is at the floor; its comparisons are "not decidable" and leave their Holm family; the
+     hypothesis is decided on the remaining comparisons ("undecided" for a modality if none remains). If an
+     image cell has no cross matrix the old point rule (group mean f <= 0.1) is used and floor_method says so.
+  Differences are treatment - reference: H1 m(u) - m(1); H2a f(rec) - f(oracle); H2b f(rec) - f(none);
      H3/H4/H5 f(protocol) - f(FedAvg).
-  H1: one-sided Wilcoxon signed-rank (alternative: m(u) < m(1)) for u = 2, 4, 8, 16 vs 1, Holm over the
-     comparisons of a modality; supported for a modality if all its comparisons are significant.
-  H2a: two-sided 95% t interval of the paired differences, supported if both (all decidable) intervals lie
-     within [-0.05, 0.05].
-  H2b: one-sided Wilcoxon (f(rec) > f(none)), Holm over 2; supported if both significant; if neither is and
-     both t intervals lie within the margin -> "text does not matter within the margin"; otherwise undecided.
-  H3: two-sided 95% t interval within +-0.05 for every comparison (both modalities, both u).
-  H4: one-sided 95% t lower bound (mean - t_{0.95, n-1} se) >= -0.05 for every comparison.
-  H5: image: one-sided Wilcoxon (f(FedBN) < f(FedAvg)), Holm over 2, both significant; text: two-sided 95% t
-     interval within +-0.05 for both u. Supported if both parts hold.
-  Zero differences: Wilcoxon zero_method="wilcox" (zeros dropped; all zero -> p = 1); a zero-width interval
-     (all differences equal) is [mean, mean], so an all-zero difference lies within the margin.
-  "Within the margin" and "at or above -0.05" are inclusive.
-  Every comparison also gets the paired two-sided 95% t interval, a per-seed table, and the sensitivity
-  analysis: a linear mixed model d ~ 1 + (1 | seed) (statsmodels MixedLM, REML), whose estimate, 95% Wald
-  interval (one-sided lower bound for H4) and p value (one-sided for directional tests; Holm within the same
-  family) give a decision that is compared with the main decision (column mixed_agrees).
-  ANOVA: per modality, f ~ C(protocol) * C(u) + C(victim) on the protocol experiment (recovered condition,
-  the u levels at which a non-FedAvg protocol was run), type II sums of squares; decides nothing.
-  Gate: if the image attack is not informative at B = 8 (--image-gate not_informative), all image parts of
-  H1-H5 are "undecided (gate)".
+  H1: one-sided Wilcoxon (m(u) < m(1)), Holm over the comparisons of a modality; supported if all significant.
+  Interval rules (H2a, H3, H5 text; two-sided 95% t interval vs +-0.05): supported if every interval lies
+     within the margin; contradicted if at least one lies entirely outside it; otherwise inconclusive.
+  H4: supported if every one-sided 95% t lower bound >= -0.05; contradicted if the upper end of a two-sided
+     95% interval lies below -0.05; otherwise inconclusive.
+  H2b: one-sided Wilcoxon (f(rec) > f(none)), Holm over 2; supported if all significant; if none is and all
+     t intervals lie within the margin -> "text does not matter within the margin"; otherwise undecided.
+  H5 image: one-sided Wilcoxon (f(FedBN) < f(FedAvg)), Holm over 2, all significant -> supported.
+  Overall H3-H5 (both modalities): decided on the modality parts that are decided: supported if all are
+     supported; contradicted if any is contradicted; not supported if any Wilcoxon part is not supported;
+     otherwise inconclusive.
+  Zero differences: Wilcoxon zero_method="wilcox" (all zero -> p = 1); a zero-width interval is [mean, mean].
+  Margins are inclusive. Every comparison also gets the per-seed means and the mixed-model sensitivity
+  analysis d ~ 1 + (1 | seed) (statsmodels MixedLM, REML, Wald intervals, one-sided p for directional tests,
+  Holm in the same family; column mixed_agrees). ANOVA per modality: f ~ C(protocol) * C(u) + C(victim) on the
+  protocol experiment, type II; decides nothing.
+  --image-gate not_informative (calibration gate failed at B = 8): all image decisions "undecided (gate)".
 
-AMBIGUITIES (the most literal reading is implemented; see also the report of the agent that wrote this):
-  1. H3-H5 span both modalities but the floor rule speaks of "a modality": decisions are given per modality
-     and overall; overall = decided on the remaining (decidable) modality parts.
-  2. "Not supported" for an interval rule does not distinguish an interval that excludes the margin from
-     one that is merely too wide (both are reported via ci_low / ci_high).
-  3. The floor is checked on the FedAvg cell only, even when the treatment cell (e.g. FedBN images, which
-     H5 expects to drop) is itself at the floor.
-  4. The image m_0 is the mean of the mismatched control (src/score_images.py column A_mismatched: the
-     victim's originals scored against the reconstructions of every other victim of the same factor
-     combination) over the reference cell (FedAvg, u = 1, recovered). Override with --m0.
-  5. H2b's third outcome ("text does not matter within the margin") is not a "supported/not supported"
-     decision; it is output verbatim.
+GATE (calibration, command `gate`): per group of a score_images.py cross file, restricted to --victims
+  (and --seed) BEFORE the control is computed: informative = permutation-test p <= 0.05; strongly_informative
+  = informative and mean A >= 0.90; also the share of originals ranked first, the control (mean over
+  w != v within the restricted group) and, for the record, the old one-sided Wilcoxon of A against it.
+
+AMBIGUITIES (most literal reading implemented)
+  1. "Every image decision is not tested" when the reference cell fails is applied to H1 too, although H1 is
+     decided on A, not f.
+  2. Overall H3-H5 when the modality parts disagree in kind (e.g. image "not supported", text "inconclusive")
+     is not defined by the paper; the order above is ours.
+  3. The floor test is on the FedAvg cell only, even when the treatment cell is itself at chance.
+  4. H2b's third outcome is output verbatim.
 
 usage:
-  python src/analyze.py test tidy.csv [more.csv] --out runs/analysis [--m0 image=0.5] [--image-gate informative]
+  python src/analyze.py test tidy.csv [more.csv] --cross scores_cross.csv --out runs/analysis [--m0 image=0.5]
   python src/analyze.py tidy-images runs/scores/images.csv --out tidy_images.csv [--condition recovered]
-  python src/analyze.py gate runs/scores/images.csv [--by batch u init tag res] [--victims 3 4 5 6 7 8 9]
-    (one gate row per group; the paper's gate uses the 7 seed-0 clients not used for tuning, at B = 8, 4, 2, 1)
+  python src/analyze.py gate runs/scores/images.csv [--cross ..._cross.csv] [--victims 3 4 5 6 7 8 9] [--seed 0]
 """
 import argparse
+import itertools
 import os
 import sys
 import warnings
@@ -124,6 +129,28 @@ def holm(p):
     return adj
 
 
+def perm_test(M, n_mc=100_000, seed=0, exact_max=8):
+    """Permutation test of a cross matrix M[v, w] (rows: originals of v, columns: reconstructions of w).
+    Returns (T, p, n_permutations, exact)."""
+    M = np.asarray(M, float)
+    n = len(M)
+    if n == 0:
+        return np.nan, np.nan, 0, True
+    T = float(np.trace(M) / n)
+    rows = np.arange(n)
+    if n <= exact_max:
+        P = np.array(list(itertools.permutations(range(n))))
+        null = M[rows, P].mean(1)
+        exact = True
+    else:
+        g = np.random.default_rng(seed)
+        P = np.argsort(g.random((n_mc, n)), axis=1)
+        null = np.concatenate([[T], M[rows, P].mean(1)])  # identity included
+        exact = False
+    p = float(np.mean(null >= T - 1e-12))
+    return T, p, len(null), exact
+
+
 def mixed(d, seeds):
     """d ~ 1 + (1 | seed): returns estimate, se, two-sided p, note."""
     d = np.asarray(d, float)
@@ -141,21 +168,39 @@ def mixed(d, seeds):
     return float(fit.fe_params["Intercept"]), float(fit.bse_fe["Intercept"]), float(fit.pvalues["Intercept"]), note
 
 
-def gate(A, A_mismatched, alpha=ALPHA, threshold=GATE_A):
-    """Calibration gate of the paper. 'informative': one-sided Wilcoxon signed-rank test of A against the
-    mismatched control (A_mismatched: the victim's own originals scored against the other victims'
-    reconstructions), paired by victim, at alpha; 'identifies the patients': informative and mean A >= 0.90."""
-    A, M = np.asarray(A, float), np.asarray(A_mismatched, float)
-    ok = ~(np.isnan(A) | np.isnan(M))
-    A, M = A[ok], M[ok]
-    stat, p, nz = wilcoxon(A - M, "greater")
-    informative = bool(p < alpha)
-    return {"n": int(len(A)), "n_nonzero": nz, "mean_A": float(A.mean()) if len(A) else np.nan,
-            "mean_A_mismatched": float(M.mean()) if len(M) else np.nan, "W": stat, "p": p,
-            "informative": informative, "identifies": bool(informative and A.mean() >= threshold)}
+def gate(M, top1=None, alpha=ALPHA, threshold=GATE_A):
+    """Calibration gate on a cross matrix M[v, w] (diagonal = real scores) of the gate clients only.
+    informative = permutation-test p <= alpha; strongly_informative = informative and mean A >= threshold.
+    The old one-sided Wilcoxon of A against the control (mean over w != v) is returned for the record."""
+    M = np.asarray(M, float)
+    n = len(M)
+    A = np.diag(M)
+    ctrl = np.array([(M[v].sum() - M[v, v]) / (n - 1) for v in range(n)]) if n > 1 else np.full(n, np.nan)
+    T, p, nperm, exact = perm_test(M)
+    _, pw, nz = wilcoxon(A - ctrl, "greater") if n > 1 else (np.nan, np.nan, 0)
+    informative = bool(p <= alpha)
+    return {"n": n, "mean_A": float(A.mean()) if n else np.nan, "mean_control": float(np.nanmean(ctrl)) if n > 1 else np.nan,
+            "top1_share": float(np.mean(top1)) if top1 is not None and len(top1) else np.nan,
+            "p_perm": p, "n_perm": nperm, "exact": exact, "informative": informative,
+            "strongly_informative": bool(informative and A.mean() >= threshold), "p_wilcoxon_old": pw}
 
 
 # ---------------------------------------------------------------- data
+def _norm_ids(df, cols):
+    for c in cols:  # 0, 0.0 and "0" must pair: integers where possible
+        num = pd.to_numeric(df[c], errors="coerce")
+        if num.notna().all() and (num == num.round()).all():
+            df[c] = num.astype(int)
+    return df
+
+
+def _norm_cell(df):
+    df["condition"] = df["condition"].fillna("").astype(str).str.strip().str.lower().map(lambda c: COND_ALIASES.get(c, c))
+    df["protocol"] = df["protocol"].fillna("").astype(str).str.strip().str.lower().replace({"": "fedavg", "nan": "fedavg"})
+    df["u"] = df["u"].astype(int)
+    return df
+
+
 def load_tidy(paths):
     df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
     need = {"seed", "victim", "protocol", "u", "modality", "value"}
@@ -163,14 +208,9 @@ def load_tidy(paths):
         raise SystemExit(f"missing columns: {sorted(need - set(df.columns))}")
     if "condition" not in df:
         df["condition"] = "recovered"
-    df["condition"] = df["condition"].fillna("").astype(str).str.strip().str.lower().map(lambda c: COND_ALIASES.get(c, c))
-    df["protocol"] = df["protocol"].astype(str).str.strip().str.lower()
+    df = _norm_cell(df)
     df["modality"] = df["modality"].astype(str).str.strip().str.lower()
-    df["u"] = df["u"].astype(int)
-    for c in ("seed", "victim"):  # 0, 0.0 and "0" must pair: integers where possible
-        num = pd.to_numeric(df[c], errors="coerce")
-        if num.notna().all() and (num == num.round()).all():
-            df[c] = num.astype(int)
+    df = _norm_ids(df, ("seed", "victim"))
     df["key"] = df["seed"].astype(str) + ":" + df["victim"].astype(str)
     dup = df.duplicated(["key", "protocol", "u", "condition", "modality"])
     if dup.any():
@@ -178,12 +218,77 @@ def load_tidy(paths):
     return df
 
 
+def load_cross(paths):
+    if not paths:
+        return None
+    c = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+    c = _norm_cell(c)
+    c = _norm_ids(c, ("v_seed", "v_victim", "w_seed", "w_victim"))
+    c["v_key"] = c["v_seed"].astype(str) + ":" + c["v_victim"].astype(str)
+    c["w_key"] = c["w_seed"].astype(str) + ":" + c["w_victim"].astype(str)
+    return c
+
+
+def cross_matrix(cross, keys, protocol="fedavg", u=1, condition="recovered", batch=None):
+    """Square A(v, w) over the victims in `keys` that have a complete row in the cell; None if unavailable."""
+    if cross is None:
+        return None, []
+    c = cross[(cross.protocol == protocol) & (cross.u == u) & (cross.condition == condition)]
+    if batch is not None and "batch" in c:
+        c = c[c.batch == batch]
+    if "group" in c and c.group.nunique() > 1:
+        raise SystemExit(f"cross file has {c.group.nunique()} groups for cell {protocol} u={u} {condition}; use --batch")
+    keys = [k for k in keys if k in set(c.v_key)]
+    c = c[c.v_key.isin(keys) & c.w_key.isin(keys)]
+    if c.empty:
+        return None, []
+    M = c.pivot_table(index="v_key", columns="w_key", values="A", aggfunc="mean").reindex(index=keys, columns=keys)
+    full = [k for k in keys if M.loc[k].notna().all() and M[k].notna().all()]
+    if len(full) < len(keys):
+        M = M.loc[full, full]
+    return (M.to_numpy() if len(full) else None), full
+
+
 def cell(df, mod, protocol="fedavg", u=1, condition="recovered"):
     return df[(df.modality == mod) & (df.protocol == protocol) & (df.u == u) & (df.condition == condition)]
 
 
-def add_f(df, m0_override):
-    """Adds column f; returns (df, info per modality)."""
+def victim_m0(df, mod):
+    """Per-victim zero point (m0 is a property of the victim); NaN if absent."""
+    if "m0" not in df:
+        return {}
+    g = df[(df.modality == mod) & df["m0"].notna()]
+    return g.groupby("key")["m0"].mean().to_dict()
+
+
+def floor_test(df, cross, mod, u, m0_override, batch=None):
+    """Is the FedAvg recovered cell at u above the floor? Returns (above, p, method)."""
+    c = cell(df, mod, "fedavg", u)
+    if c.empty:
+        return False, np.nan, "no FedAvg cell"
+    if mod == "image":
+        M, keys = cross_matrix(cross, list(c.key), "fedavg", u, "recovered", batch)
+        if M is not None and len(keys) > 1:
+            _, p, _, _ = perm_test(M)
+            return bool(p <= ALPHA), p, f"permutation test (n={len(keys)})"
+        fm = c["f"].mean()
+        return bool(fm > FLOOR) if not np.isnan(fm) else False, np.nan, "point rule mean f > 0.1 (no cross matrix)"
+    if mod in m0_override:
+        m0 = np.full(len(c), m0_override[mod])
+    else:
+        mp = victim_m0(df, mod)
+        m0 = c.key.map(mp).to_numpy(float)
+    ok = ~np.isnan(m0)
+    if not ok.any():
+        fm = c["f"].mean()
+        return bool(fm > FLOOR) if not np.isnan(fm) else False, np.nan, "point rule mean f > 0.1 (no m0)"
+    _, p, _ = wilcoxon(c.value.to_numpy(float)[ok] - m0[ok], "greater")
+    return bool(p <= ALPHA), p, f"Wilcoxon vs m0 (n={int(ok.sum())})"
+
+
+def add_f(df, m0_override, cross=None, batch=None):
+    """Adds column f; returns (df, info per modality). Image f only if the reference cell passes the
+    permutation test (info['image']['ref_test'])."""
     df = df.copy()
     df["f"] = np.nan
     info = {}
@@ -192,17 +297,28 @@ def add_f(df, m0_override):
         if ref.empty:
             info[mod] = {"note": "no FedAvg u=1 recovered cell: f undefined"}
             continue
+        inf = {}
+        if mod == "image":
+            M, keys = cross_matrix(cross, list(ref.key), batch=batch)
+            if M is not None and len(keys) > 1:
+                _, p, nperm, _ = perm_test(M)
+                inf.update(ref_test_p=p, ref_test_n=len(keys), ref_passes=bool(p <= ALPHA))
+            else:
+                inf.update(ref_test_p=np.nan, ref_passes=None, ref_note="reference cell not tested (no cross matrix)")
+            if inf["ref_passes"] is False:
+                info[mod] = {**inf, "note": "reference cell fails the permutation test: image f not computed"}
+                continue
         if mod in m0_override:
             m0, src = m0_override[mod], "cli"
         elif "m0" in df and ref["m0"].notna().any():
             m0, src = float(ref["m0"].mean()), "mean m0 of reference cell"
         else:
-            info[mod] = {"note": "no m0 (column m0 or --m0): f undefined"}
+            info[mod] = {**inf, "note": "no m0 (column m0 or --m0): f undefined"}
             continue
         den = float(ref["value"].mean()) - m0
         sel = df.modality == mod
         df.loc[sel, "f"] = (df.loc[sel, "value"] - m0) / den
-        info[mod] = {"m0": m0, "m0_source": src, "ref_mean": den + m0, "denominator": den, "n_ref": len(ref)}
+        info[mod] = {**inf, "m0": m0, "m0_source": src, "ref_mean": den + m0, "denominator": den, "n_ref": len(ref)}
     return df, info
 
 
@@ -243,31 +359,41 @@ def comparisons(df):
     return out
 
 
-def evaluate(df, image_gate="unknown"):
-    comps, per_seed = [], []
+def evaluate(df, image_gate="unknown", cross=None, m0_override=None, info=None, batch=None):
+    m0_override = m0_override or {}
+    info = info or {}
+    image_not_tested = info.get("image", {}).get("ref_passes") is False
+    comps, per_seed, floors = [], [], {}
     for c in comparisons(df):
         mod, metric = c["modality"], c["metric"]
-        a = cell(df, mod, *c["t"])
-        b = cell(df, mod, *c["r"])
-        m = paired(a, b, metric)
+        if mod.startswith("image") and image_not_tested:
+            comps.append({k: c[k] for k in ("hypothesis", "modality", "u", "metric", "treatment", "reference", "kind",
+                                            "alternative")} | {"n": 0, "decidable": False, "not_tested": True})
+            continue
+        m = paired(cell(df, mod, *c["t"]), cell(df, mod, *c["r"]), metric)
         d, seeds = m["d"].to_numpy(), m["seed"].tolist()
         row = {k: c[k] for k in ("hypothesis", "modality", "u", "metric", "treatment", "reference", "kind", "alternative")}
         lo, hi = t_interval(d)
         row.update(n=len(d), mean_diff=d.mean() if len(d) else np.nan, sd_diff=d.std(ddof=1) if len(d) > 1 else np.nan,
-                   ci_low=lo, ci_high=hi)
+                   ci_low=lo, ci_high=hi, not_tested=False)
         if c["floor_rule"]:
-            fmean = cell(df, mod, "fedavg", c["u"], "recovered")["f"].mean()
-            row.update(fedavg_mean_f=fmean, at_floor=bool(fmean <= FLOOR) if not np.isnan(fmean) else True)
+            if (mod, c["u"]) not in floors:
+                floors[(mod, c["u"])] = floor_test(df, cross, mod, c["u"], m0_override, batch)
+            above, fp, how = floors[(mod, c["u"])]
+            row.update(fedavg_mean_f=cell(df, mod, "fedavg", c["u"])["f"].mean(), floor_p=fp, floor_method=how,
+                       at_floor=not above)
         else:
-            row.update(fedavg_mean_f=np.nan, at_floor=False)
+            row.update(fedavg_mean_f=np.nan, floor_p=np.nan, floor_method="", at_floor=False)
         row["decidable"] = not row["at_floor"] and len(d) >= 2
         if c["kind"] == "wilcoxon":
             row["W"], row["p"], row["n_nonzero"] = wilcoxon(d, c["alternative"]) if len(d) else (np.nan, np.nan, 0)
         elif c["kind"] == "equivalence":
             row["within_margin"] = bool(lo >= -MARGIN and hi <= MARGIN) if not np.isnan(lo) else False
+            row["outside_margin"] = bool(lo > MARGIN or hi < -MARGIN) if not np.isnan(lo) else False
         else:
             row["lower_bound"] = t_lower(d)
             row["within_margin"] = bool(row["lower_bound"] >= -MARGIN) if not np.isnan(row["lower_bound"]) else False
+            row["outside_margin"] = bool(hi < -MARGIN) if not np.isnan(hi) else False
         est, se, p2, note = mixed(d, seeds) if len(d) > 2 else (np.nan, np.nan, np.nan, "skipped (n < 3)")
         row.update(mixed_est=est, mixed_se=se, mixed_note=note)
         if not np.isnan(est):
@@ -284,22 +410,20 @@ def evaluate(df, image_gate="unknown"):
     comp = pd.DataFrame(comps)
     if comp.empty:
         return comp, pd.DataFrame(), pd.DataFrame(per_seed)
-    for col in ("p", "W", "n_nonzero", "within_margin", "lower_bound", "mixed_p", "mixed_ci_low", "mixed_ci_high",
-                "mixed_lower_bound"):
+    for col in ("p", "W", "n_nonzero", "within_margin", "outside_margin", "lower_bound", "mixed_est", "mixed_p",
+                "mixed_ci_low", "mixed_ci_high", "mixed_lower_bound", "at_floor", "floor_p", "floor_method", "ci_low", "ci_high"):
         if col not in comp:
             comp[col] = np.nan
-    # Holm within each family (hypothesis x modality), over the decidable comparisons only
     comp["p_holm"], comp["mixed_p_holm"] = np.nan, np.nan
     for (h, mod), g in comp[comp.kind == "wilcoxon"].groupby(["hypothesis", "modality"]):
-        g = g[g.decidable]
+        g = g[g.decidable.astype(bool)]
         if len(g):
-            comp.loc[g.index, "p_holm"] = holm(g["p"].to_numpy())
-            comp.loc[g.index, "mixed_p_holm"] = holm(g["mixed_p"].to_numpy())
-    comp["significant"] = np.where((comp.kind == "wilcoxon") & comp.decidable, comp["p_holm"] < ALPHA, np.nan)
-    # sensitivity: does the mixed model reach the same comparison-level decision?
+            comp.loc[g.index, "p_holm"] = holm(g["p"].to_numpy(float))
+            comp.loc[g.index, "mixed_p_holm"] = holm(g["mixed_p"].to_numpy(float))
+    comp["significant"] = np.where((comp.kind == "wilcoxon") & comp.decidable.astype(bool), comp["p_holm"] < ALPHA, np.nan)
     agree = []
     for _, r in comp.iterrows():
-        if not r["decidable"] or (np.isnan(r["mixed_est"]) if isinstance(r["mixed_est"], float) else False):
+        if not r["decidable"] or pd.isna(r["mixed_est"]):
             agree.append(np.nan)
         elif r["kind"] == "wilcoxon":
             agree.append(bool((r["mixed_p_holm"] < ALPHA) == (r["p_holm"] < ALPHA)))
@@ -317,22 +441,22 @@ def decide(comp, image_gate):
     def add(h, mod, decision, reason):
         out.append({"hypothesis": h, "modality": mod, "decision": decision, "reason": reason})
 
-    def gated(mod):
-        return mod.startswith("image") and image_gate == "not_informative"
-
     for (h, mod), g in comp.groupby(["hypothesis", "modality"], sort=False):
-        dec = g[g.decidable]
+        if mod.startswith("image") and image_gate == "not_informative":
+            add(h, mod, "undecided (gate)", "image attack not informative at B = 8"); continue
+        if g.not_tested.astype(bool).all():
+            add(h, mod, "not tested", "FedAvg u=1 recovered cell fails the permutation test"); continue
+        dec = g[g.decidable.astype(bool)]
         nd = len(g) - len(dec)
         tail = f"; {nd} comparison(s) at the floor, not decidable" if nd else ""
-        if gated(mod):
-            add(h, mod, "undecided (gate)", "image attack not informative at B = 8"); continue
         if h == "H1" and mod not in PRIMARY:
-            add(h, mod, "reported, decides nothing", f"{int(g.significant.sum())}/{len(g)} Holm-significant"); continue
+            add(h, mod, "reported, decides nothing", f"{int(np.nansum(g.significant))}/{len(g)} Holm-significant"); continue
         if dec.empty:
             add(h, mod, "undecided", "no decidable comparison" + tail); continue
         k = len(dec)
-        if g.kind.iloc[0] == "wilcoxon":
-            s = int(dec.significant.sum())
+        kind = g.kind.iloc[0]
+        if kind == "wilcoxon":
+            s = int(np.nansum(dec.significant))
             if h == "H2b":
                 inside = bool(((dec.ci_low >= -MARGIN) & (dec.ci_high <= MARGIN)).all())
                 if s == k:
@@ -346,21 +470,31 @@ def decide(comp, image_gate):
                 add(h, mod, "supported" if s == k else "not supported", f"{s}/{k} Holm-significant{note}" + tail)
         else:
             w = int(dec.within_margin.astype(bool).sum())
-            what = "lower bounds >= -0.05" if g.kind.iloc[0] == "noninferiority" else f"intervals within +-{MARGIN}"
-            add(h, mod, "supported" if w == k else "not supported", f"{w}/{k} {what}" + tail)
+            o = int(dec.outside_margin.astype(bool).sum())
+            if kind == "noninferiority":
+                what = f"{w}/{k} lower bounds >= -{MARGIN}, {o}/{k} upper bounds < -{MARGIN}"
+            else:
+                what = f"{w}/{k} intervals within +-{MARGIN}, {o}/{k} entirely outside"
+            d = "supported" if w == k else ("contradicted" if o > 0 else "inconclusive")
+            add(h, mod, d, what + tail)
     dec = pd.DataFrame(out)
-    # overall decisions for hypotheses that span both modalities, on the remaining (decided) modality parts
     for h in ("H3", "H4", "H5"):
         g = dec[(dec.hypothesis == h) & dec.modality.isin(PRIMARY)]
         if g.empty:
             continue
-        parts = g[~g.decision.str.startswith("undecided")]
+        parts = g[~g.decision.str.startswith("undecided") & (g.decision != "not tested")]
         missing = sorted(set(PRIMARY) - set(g.modality))
         if parts.empty:
-            d, why = "undecided", "no modality decidable"
+            d = "undecided"
+        elif (parts.decision == "supported").all():
+            d = "supported"
+        elif (parts.decision == "contradicted").any():
+            d = "contradicted"
+        elif (parts.decision == "not supported").any():
+            d = "not supported"
         else:
-            d = "supported" if (parts.decision == "supported").all() else "not supported"
-            why = ", ".join(f"{r.modality}: {r.decision}" for r in g.itertuples())
+            d = "inconclusive"
+        why = ", ".join(f"{r.modality}: {r.decision}" for r in g.itertuples())
         if missing:
             why += f"; no data for {missing}"
         out.append({"hypothesis": h, "modality": "overall", "decision": d, "reason": why})
@@ -390,24 +524,25 @@ def anova(df):
 # ---------------------------------------------------------------- commands
 def cmd_test(a):
     df = load_tidy(a.inputs)
+    cross = load_cross(a.cross)
     m0 = {}
     for s in a.m0 or []:
         k, v = s.split("=")
         m0[k.strip().lower()] = float(v)
-    df, info = add_f(df, m0)
-    comp, dec, per_seed = evaluate(df, a.image_gate)
+    df, info = add_f(df, m0, cross, a.batch)
+    comp, dec, per_seed = evaluate(df, a.image_gate, cross, m0, info, a.batch)
     an = anova(df)
     os.makedirs(a.out, exist_ok=True)
     for name, t in (("comparisons", comp), ("decisions", dec), ("per_seed", per_seed), ("anova", an)):
         t.to_csv(os.path.join(a.out, name + ".csv"), index=False)
     pd.set_option("display.width", 250, "display.max_columns", 40, "display.max_colwidth", 90)
-    print("zero points and denominators:")
+    print("zero points, denominators, reference-cell test:")
     for k, v in info.items():
         print(f"  {k}: {v}")
     if a.image_gate == "unknown":
-        print("  (image gate not given: image hypotheses are tested as if the attack were informative at B = 8)")
+        print("  (calibration gate not given: image hypotheses are tested as if the attack were informative at B = 8)")
     cols = ["hypothesis", "modality", "u", "treatment", "reference", "n", "mean_diff", "ci_low", "ci_high", "lower_bound",
-            "p", "p_holm", "significant", "within_margin", "fedavg_mean_f", "decidable", "mixed_est", "mixed_agrees"]
+            "p", "p_holm", "significant", "within_margin", "outside_margin", "floor_p", "decidable", "mixed_est", "mixed_agrees"]
     if comp.empty:
         print("\nno planned comparison is present in the data")
     else:
@@ -439,13 +574,32 @@ def cmd_tidy(a):
 
 def cmd_gate(a):
     s = pd.read_csv(a.scores)
-    if a.victims:
-        s = s[s.victim.isin(a.victims)]
+    cross_path = a.cross or os.path.splitext(a.scores)[0] + "_cross.csv"
+    c = pd.read_csv(cross_path)
+    s = _norm_ids(s, ("seed", "victim"))
+    c = _norm_ids(c, ("v_seed", "v_victim", "w_seed", "w_victim"))
+    if a.victims:  # restrict BEFORE the control is computed: both the originals and the partners
+        c = c[c.v_victim.isin(a.victims) & c.w_victim.isin(a.victims)]
+    if a.seed is not None:
+        c = c[(c.v_seed == a.seed) & (c.w_seed == a.seed)]
+    top1 = dict(zip(s["file"], s["top1"]))
     rows = []
-    for key, g in s.groupby(a.by, dropna=False):
-        r = gate(g["A"], g["A_mismatched"])
-        rows.append({**dict(zip(a.by, key if isinstance(key, tuple) else (key,))), **r})
-    print(pd.DataFrame(rows).round(4).to_string(index=False))
+    fields = ["dir", "protocol", "condition", "batch", "u", "init", "tag", "res"]
+    for gid, g in c.groupby("group"):
+        keys = sorted(set(zip(g.v_seed, g.v_victim)), key=lambda t: (str(t[0]), t[1]))
+        g = g.assign(vk=list(zip(g.v_seed, g.v_victim)), wk=list(zip(g.w_seed, g.w_victim)))
+        M = g.pivot_table(index="vk", columns="wk", values="A", aggfunc="mean").reindex(index=keys, columns=keys)
+        if M.isna().any().any():
+            print(f"WARNING group {gid}: incomplete cross matrix, skipped", file=sys.stderr)
+            continue
+        files = g[g.diagonal.astype(bool)].set_index("vk").loc[keys, "v_file"]
+        r = gate(M.to_numpy(), [top1.get(f, np.nan) for f in files])
+        rows.append({**{f: g[f].iloc[0] for f in fields if f in g}, **r})
+    out = pd.DataFrame(rows)
+    pd.set_option("display.width", 250, "display.max_columns", 30)
+    print(out.drop(columns=[x for x in ("dir", "protocol", "condition") if x in out and out[x].nunique() <= 1]).round(4).to_string(index=False))
+    if a.out:
+        out.to_csv(a.out, index=False)
 
 
 def main(argv=None):
@@ -453,6 +607,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("test", help="decision rules of the hypothesis table")
     t.add_argument("inputs", nargs="+")
+    t.add_argument("--cross", nargs="*", help="score_images.py *_cross.csv files (image floor and reference tests)")
+    t.add_argument("--batch", type=int, default=None, help="batch size of the cross matrices to use (if several)")
     t.add_argument("--out", default="runs/analysis")
     t.add_argument("--m0", nargs="*", help="override zero points, e.g. image=0.5 text=0.21")
     t.add_argument("--image-gate", choices=["informative", "not_informative", "unknown"], default="unknown")
@@ -462,10 +618,12 @@ def main(argv=None):
     ti.add_argument("--out", required=True)
     ti.add_argument("--condition", default=None, help="force a condition label (default: column 'condition')")
     ti.set_defaults(fn=cmd_tidy)
-    g = sub.add_parser("gate", help="calibration gate on a score_images.py CSV")
+    g = sub.add_parser("gate", help="calibration gate (permutation test) on a score_images.py CSV and its cross file")
     g.add_argument("scores")
-    g.add_argument("--by", nargs="+", default=["batch", "u", "init", "tag", "res"])
-    g.add_argument("--victims", type=int, nargs="*", help="gate clients only (e.g. 3 4 5 6 7 8 9)")
+    g.add_argument("--cross", default=None, help="default: <scores stem>_cross.csv")
+    g.add_argument("--victims", type=int, nargs="*", help="gate clients only; restricts the group before the control")
+    g.add_argument("--seed", type=int, default=None)
+    g.add_argument("--out", default=None)
     g.set_defaults(fn=cmd_gate)
     a = ap.parse_args(argv)
     a.fn(a)

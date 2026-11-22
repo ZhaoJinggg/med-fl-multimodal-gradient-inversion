@@ -27,6 +27,21 @@ synthetic_tidy.csv, analysis_synth/). runs/gate/ was not touched.
   B=2 both_bn1_12k: A .9995/.9923/.9434, new ctrl .792/.453/.465, old next .469/.555/.761.
   Only 2 partners in the pilot; the new control follows v's typicality (correlates with mean-image A).
 
+## Follow-up 2 (coordinator): max rule, cross matrix, permutation gate, 3-outcome decisions
+- score_images.py rewritten: A = max rule (s(c) = max_j SSIM(c, rec_j), no matching); A_matched/top1_matched kept;
+  assignment only for SSIM/PSNR/LPIPS. Cross matrix A(v, w) per group -> OUT_cross.csv (diagonal = real score).
+  Group = (dir, protocol, condition, batch, u, init, tag, res); victims (seed, victim). JSON proto/protocol,
+  condition, text("oracle") read. rank_scores() kept for the reviewer's scratch scripts.
+- analyze.py rewritten: perm_test (exact n<=8, else 100k MC seed 0 + identity), gate on cross (--victims
+  restricts before control), floor by test (image perm test on cross; text Wilcoxon vs m0), reference-cell test
+  -> image "not tested", interval rules supported/contradicted/inconclusive, --cross/--batch options.
+- test_analyze.py rewritten; ALL TESTS PASSED on server.
+- Rerun: runs/scores_test/pilot_v3.csv (+_pairs, _cross), dirs push_b8 push_b24 b1_long attrib128 tune128,
+  --seed 0 --protocol fedavg; log score_v3.log. DONE: 69 files in 434 s (median 1.8/3.5/7.1/14.1 s at B=1/2/4/8).
+  Table (clients 0-2) in runs/scores_test/pilot_v3_table.csv, gate in gate_pilot_v3.csv (script runs/scores_test/code/pilot_table.py).
+  both_bn1_12k / b1_long r128: max-rule A 0.996 / 0.891 / 0.729 / 0.560 at B=1/2/4/8 (matched 0.996/0.978/0.803/0.682);
+  control (2 partners) 0.43 / 0.46 / 0.45 / 0.43 - below 0.5. Server src copies verified by md5.
+
 ## Design decisions
 - Mismatched partner: group by (dir, B, u, init, tag, seed, res), sort by victim, partner = next victim (cyclic).
   Pool excludes the partner batch's other images. Reuses the SSIM-to-pool vectors, so costs nothing extra.
