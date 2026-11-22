@@ -26,7 +26,7 @@ for p in fedavg fedprox scaffold fedbn; do
   grep -hE "round +9|round 9|test" logs/dry_warm_$p.log | tail -2 | cut -c1-160
 done
 G() { case $1 in fedavg) echo $FL/seed0_fedavg;; fedprox) echo $FL/seed0_fedprox_mu1;; scaffold) echo $FL/seed0_scaffold_optII;; fedbn) echo $FL/seed0_fedbn;; esac; }
-TXT="--seed 0 --lr-img 0.01 --lr-txt 1e-2 --victims $V --batch 8 --res 128 --parallel 1000 --noise-factor 1.5 --l1-thresh 5e-2 --l2-thresh 1.5e-2 --out $TX"
+TXT="--seed 0 --lr-img 0.01 --lr-txt 1e-2 --victims $V --batch 8 --res 128 --parallel 1000 --noise-factor 1.5 --l1-thresh 5e-2 --l2-thresh 1.5e-2 --idle 2 --out $TX"
 IMG="--seed 0 --lr-img 0.01 --lr-txt 1e-2 --victims $V --batch 8 --res 128 --init mean --opt-lr 0.01 --tv 1e-2 --bn 1.0 --iters 300 --checkpoints 300"
 # 2. text: every protocol at u = 4; FedAvg also at u = 1 and 16
 for p in fedavg fedprox scaffold fedbn; do
