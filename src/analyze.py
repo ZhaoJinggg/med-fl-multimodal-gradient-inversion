@@ -36,30 +36,34 @@ RULES IMPLEMENTED (the paper's closed design of 2026-11-23: H1, H2a, H2b, H3, H4
      m0 in that cell. A cell that cannot be tested (no cross matrix, no m0) is treated as not above the
      floor and the output says so; no point rule replaces the test.
   Comparisons (differences are treatment - reference, paired by victim):
-     H1   text ROUGE-L, FedAvg, batch 8: u = 2, 4, 8, 16 against u = 1; one-sided Wilcoxon (decrease), Holm
-          over the 4; supported if all are significant, otherwise not supported. No floor rule.
+     H1   text ROUGE-L, FedAvg, batch 8: u = 2, 4, 8, 16 against u = 1; one-sided Wilcoxon (decrease);
+          supported if all 4 are significant, otherwise not supported. No floor rule.
      H2a  image f, FedAvg, u = 1, batch 2: recovered - oracle; two-sided 95% t interval against +-0.05.
      H2b  image f, FedAvg, u = 1, batch 2: recovered - none; one-sided Wilcoxon (gain); supported if
           significant; if not and the 95% t interval lies within +-0.05: "text does not matter within the
-          margin"; otherwise undecided.
+          margin"; otherwise inconclusive.
      H3   text f, batch 8, u = 4, 8: SCAFFOLD - FedAvg; two-sided 95% t intervals against +-0.05.
      H4   text f, batch 8, u = 4, 8: FedProx - FedAvg; supported if every one-sided 95% t lower bound is at
           or above -0.05; contradicted if a two-sided 95% interval lies entirely below -0.05; else inconclusive.
-     H5a  image A, u = 1, recovered, batch 1, 2: FedBN - FedAvg; one-sided Wilcoxon (decrease), Holm over
-          the 2; supported if all are significant, otherwise not supported.
+     H5a  image A, u = 1, recovered, batch 1, 2: FedBN - FedAvg; one-sided Wilcoxon (decrease);
+          supported if both are significant, otherwise not supported.
      H5b  text f, batch 8, u = 4, 8: FedBN - FedAvg; two-sided 95% t intervals against +-0.05.
-     H6   image A, FedAvg, u = 1, recovered: batch 2, 4, 8 against batch 1; one-sided Wilcoxon (decrease),
-          Holm over the 3; supported if all are significant, otherwise not supported. No floor rule.
+     H6   image A, FedAvg, u = 1, recovered: batch 2, 4, 8 against batch 1; one-sided Wilcoxon (decrease);
+          supported if all 3 are significant, otherwise not supported. No floor rule.
   Floor rule (H2a to H5b): a comparison is decidable only if the FedAvg cell that serves as its control
      (recovered condition, same modality, u and batch) is above the floor. A comparison whose control cell
-     is at the floor is "not decidable" and leaves its Holm family; the hypothesis is decided on the
-     remaining comparisons ("undecided" if none remains).
+     is at the floor is "not decidable" and leaves its family; the hypothesis is decided on the
+     remaining comparisons ("not decidable" if none remains).
+  Multiplicity: every Wilcoxon test is run at alpha = 0.05 without adjustment. H1, H5a and H6 are supported
+     only if all their comparisons are significant (intersection-union rule), which keeps the probability
+     of a false "supported" at or below alpha. The columns p_holm and mixed_p_holm are reported for
+     information and decide nothing.
   Interval rules (H2a, H3, H5b): supported if every interval lies within the margin; contradicted if at
      least one lies entirely outside it; otherwise inconclusive.
   Zero differences: Wilcoxon zero_method="wilcox" (all zero -> p = 1); a zero-width interval is [mean, mean].
   Margins are inclusive. Every comparison also gets the per-seed means and the mixed-model sensitivity
   analysis d ~ 1 + (1 | seed) (statsmodels MixedLM, REML, Wald intervals, one-sided p for directional tests,
-  Holm in the same family; column mixed_agrees). ANOVA: text f ~ C(protocol) * C(u) + C(victim) on the
+  unadjusted like the main tests; column mixed_agrees). ANOVA: text f ~ C(protocol) * C(u) + C(victim) on the
   protocol experiment (batch 8, the u levels at which the other protocols were run), type II; decides nothing.
   Output cells.csv: n, mean, SD, mean m0, mean f and the floor test of every cell of a primary modality.
 
@@ -718,13 +722,13 @@ def evaluate(df, cross=None, m0_override=None, info=None, stratify=True, cache=N
         if len(g):
             comp.loc[g.index, "p_holm"] = holm(g["p"].to_numpy(float))
             comp.loc[g.index, "mixed_p_holm"] = holm(g["mixed_p"].to_numpy(float))
-    comp["significant"] = np.where((comp.kind == "wilcoxon") & comp.decidable.astype(bool), comp["p_holm"] < ALPHA, np.nan)
+    comp["significant"] = np.where((comp.kind == "wilcoxon") & comp.decidable.astype(bool), comp["p"] < ALPHA, np.nan)
     agree = []
     for _, r in comp.iterrows():
         if not r["decidable"] or pd.isna(r["mixed_est"]):
             agree.append(np.nan)
         elif r["kind"] == "wilcoxon":
-            agree.append(bool((r["mixed_p_holm"] < ALPHA) == (r["p_holm"] < ALPHA)))
+            agree.append(bool((r["mixed_p"] < ALPHA) == (r["p"] < ALPHA)))
         elif r["kind"] == "equivalence":
             agree.append(bool((r["mixed_ci_low"] >= -MARGIN and r["mixed_ci_high"] <= MARGIN) == bool(r["within_margin"])))
         else:
@@ -741,7 +745,7 @@ def decide(comp):
 
     for (h, mod), g in comp.groupby(["hypothesis", "modality"], sort=False):
         if mod not in PRIMARY:
-            add(h, mod, "reported, decides nothing", f"{int(np.nansum(g.significant))}/{len(g)} Holm-significant"); continue
+            add(h, mod, "reported, decides nothing", f"{int(np.nansum(g.significant))}/{len(g)} significant"); continue
         plan = "" if len(g) == PLANNED[h] else f" (the paper plans {PLANNED[h]} comparison(s), the data has {len(g)})"
         if g.ref_floor.astype(bool).all():
             add(h, mod, "not decidable", f"reference cell of the {mod} ({cell_name(REF[mod])}) is not above the floor: "
@@ -750,7 +754,7 @@ def decide(comp):
         nd = len(g) - len(dec)
         tail = (f"; {nd} comparison(s) with the control cell at the floor, not decidable" if nd else "") + plan
         if dec.empty:
-            add(h, mod, "undecided", "no decidable comparison" + tail); continue
+            add(h, mod, "not decidable", "no decidable comparison" + tail); continue
         k = len(dec)
         kind = g.kind.iloc[0]
         if kind == "wilcoxon":
@@ -762,9 +766,9 @@ def decide(comp):
                 elif s == 0 and inside:
                     add(h, mod, "text does not matter within the margin", f"0/{k} significant, t interval within +-{MARGIN}" + tail)
                 else:
-                    add(h, mod, "undecided", f"{s}/{k} significant, t interval within the margin: {inside}" + tail)
+                    add(h, mod, "inconclusive", f"{s}/{k} significant, t interval within the margin: {inside}" + tail)
             else:
-                add(h, mod, "supported" if s == k else "not supported", f"{s}/{k} Holm-significant" + tail)
+                add(h, mod, "supported" if s == k else "not supported", f"{s}/{k} significant" + tail)
         else:
             w = int(dec.within_margin.astype(bool).sum())
             o = int(dec.outside_margin.astype(bool).sum())

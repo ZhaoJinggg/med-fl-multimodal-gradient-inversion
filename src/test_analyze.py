@@ -361,6 +361,9 @@ def hypothesis_table():
     assert h1[h1.u == 2].p.iloc[0] == 1.0
     h6 = comp[(comp.hypothesis == "H6") & (comp.modality == "image")]
     assert h6.decidable.astype(bool).all() and h6.significant.all() and h6.floor_p.isna().all()
+    # no multiplicity adjustment: a Wilcoxon comparison is significant iff its own p is below alpha
+    wd = comp[(comp.kind == "wilcoxon") & comp.decidable.astype(bool)]
+    assert (wd.significant.astype(bool) == (wd.p < 0.05)).all() and (wd.p_holm >= wd.p).all()
     # H2a: zero differences -> zero-width interval within the margin; H2b: one comparison, Holm = p
     z = comp[comp.hypothesis == "H2a"].iloc[0]
     assert z.ci_low == 0 and z.ci_high == 0 and z.within_margin
@@ -388,15 +391,15 @@ def hypothesis_table():
     # no cross matrix at all: no image floor test can be run and no point rule replaces it
     d3b, info3b, comp3b, dec3b, _ = run(df, cross[cross.batch == 99])
     assert info3b["image"]["ref_passes"] is None and d3b[d3b.modality == "image"].f.isna().all()
-    check(dec3b, {("H2a", "image"): "not decidable", ("H5a", "image"): "undecided", ("H6", "image"): "supported"})
+    check(dec3b, {("H2a", "image"): "not decidable", ("H5a", "image"): "not decidable", ("H6", "image"): "supported"})
     assert comp3b[comp3b.hypothesis == "H5a"].floor_method.str.startswith("not tested").all()
 
-    # both text control cells at the floor -> H3 undecided
+    # both text control cells at the floor -> H3 and H5b not decidable
     df4 = df.copy()
     sel = (df4.modality == "text") & (df4.protocol == "fedavg") & (df4.u == 4)
     df4.loc[sel, "value"] = 0.2 + rng.normal(0, 0.01, sel.sum())
     _, _, _, dec4, _ = run(df4, cross)
-    assert decision(dec4, "H3", "text") == "undecided" and decision(dec4, "H5b", "text") == "undecided"
+    assert decision(dec4, "H3", "text") == "not decidable" and decision(dec4, "H5b", "text") == "not decidable"
 
     # equal groups, large noise -> inconclusive; a real shift beyond the margin -> contradicted
     df5 = df.copy()
@@ -425,13 +428,13 @@ def hypothesis_table():
     df7b.loc[sel7, "value"] = fa4 + rng.normal(0, 0.002, len(fa4))
     assert decision(run(df7b, cross)[3], "H4", "text") == "supported"
 
-    # H2b third outcome and "undecided"
+    # H2b third outcome and "inconclusive"
     df8 = df.copy()
     s8 = (df8.modality == "image") & (df8.batch == 2) & (df8.condition == "no_text")
     df8.loc[s8, "value"] = ref_i.value.to_numpy() + rng.normal(0, 0.002, s8.sum())
     assert decision(run(df8, cross)[3], "H2b", "image") == "text does not matter within the margin"
     df8.loc[s8, "value"] = ref_i.value.to_numpy() + rng.normal(0, 0.1, s8.sum())
-    assert decision(run(df8, cross)[3], "H2b", "image") == "undecided"
+    assert decision(run(df8, cross)[3], "H2b", "image") == "inconclusive"
     # H5a not supported if FedBN lowers nothing at batch 2; H6 not supported if batch 4 does not decline
     df9 = df.copy()
     s9 = (df9.modality == "image") & (df9.protocol == "fedbn") & (df9.batch == 2)
