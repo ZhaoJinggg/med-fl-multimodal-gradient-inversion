@@ -32,7 +32,9 @@ RULES IMPLEMENTED (literal reading of the paper as revised on 2026-11-22)
      unstratified permutation test. Hence:
      - Stratified permutation test (stratified_perm_test): only permutations within strata of victims with
        the same number of abnormal pairs in their attacked batch (v_n_abnormal of the cross file); exact if
-       there are <= 50,000 such permutations, else 100,000 Monte Carlo draws (seed 0) plus the identity.
+       there are <= 1,000,000 such permutations (the 20 test victims at batch 8: 552,960, so every batch-8
+       cell is enumerated and its p does not depend on a seed), else 100,000 Monte Carlo draws (seed 0) plus
+       the identity (batch-size comparison at 4, 2, 1).
        Reported: number of permutations, smallest attainable p (1 / number evaluated), p, and the effect size
        mean over victims in strata of size >= 2 of [A(v, v) - mean within-stratum off-diagonal A(v, w)] with
        the number of contributing victims. With few victims the test may be unable to reject at all (the 7
@@ -211,7 +213,7 @@ def strata_label(strata):
     return ",".join(f"{k}:{c[k]}" for k in sorted(c, key=lambda x: (str(type(x)), x)))
 
 
-def stratified_perm_test(M, strata, n_mc=100_000, seed=0, exact_max=50_000):
+def stratified_perm_test(M, strata, n_mc=100_000, seed=0, exact_max=1_000_000):
     """Permutation test of a cross matrix M[v, w] with the permutations restricted to victims of the same
     stratum (here: the number of abnormal pairs of the attacked batch), so that a reconstruction batch is only
     ever compared with batches carrying the same label information. Statistic T = mean_v M[v, v].
