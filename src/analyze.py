@@ -803,7 +803,10 @@ def anova(df):
     from statsmodels.stats.anova import anova_lm
     rows = []
     rec = df[(df.modality == "text") & (df.condition == "recovered") & (df.batch == MAIN_BATCH)]
-    us = sorted(set(rec[rec.protocol != "fedavg"].u))
+    # the protocol experiment: only the u levels at which EVERY protocol was run (FedBN at u = 1 is
+    # descriptive and FedAvg has further levels for H1; including them makes the design rank-deficient)
+    per = [set(x.u) for _, x in rec.groupby("protocol")]
+    us = sorted(set.intersection(*per)) if per else []
     g = rec[rec.u.isin(us)].dropna(subset=["f"])
     if g.protocol.nunique() < 2 or len(us) < 1:
         return pd.DataFrame(rows)
