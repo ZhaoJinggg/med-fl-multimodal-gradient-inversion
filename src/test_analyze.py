@@ -159,13 +159,18 @@ def label_controls():
     rg = an.stratified_perm_test(Mg, GATE_COUNTS)
     assert rg["n_perm"] == 12 and abs(rg["p"] - 1 / 12) < 1e-12 and rg["n_contrib"] == 5
     print("gate clients (counts 0,0,8,8,8,3,6), perfect diagonal: stratified p =", round(rg["p"], 4), "(= 1/12)")
-    # 20 victims: Monte Carlo path
+    # 20 victims: all 552,960 stratified permutations are enumerated (the paper's batch-8 floor test)
     r20 = an.stratified_perm_test(label_matrix(COUNTS20, diag=0.9), COUNTS20)
-    assert not r20["exact"] and r20["n_perm"] == 552_960 and r20["n_eval"] == 100_001 and abs(r20["p"] - 1 / 100_001) < 1e-12
+    assert r20["exact"] and r20["n_perm"] == 552_960 and r20["n_eval"] == 552_960 and abs(r20["p"] - 1 / 552_960) < 1e-12
     assert r20["n_contrib"] == 19  # victim with count 1 is alone in its stratum
-    # MC permutations stay within strata: a matrix that is +inf off-stratum would break the mean
+    # Monte Carlo path (used when there are more than exact_max permutations: batch sizes 4, 2, 1)
+    rmc = an.stratified_perm_test(label_matrix(COUNTS20, diag=0.9), COUNTS20, exact_max=50_000)
+    assert not rmc["exact"] and rmc["n_eval"] == 100_001 and abs(rmc["p"] - 1 / 100_001) < 1e-12 and rmc["n_contrib"] == 19
+    # permutations stay within strata on both paths: a matrix that is +inf off-stratum would break the mean
     Minf = label_matrix(COUNTS20, same=0.5, other=np.inf)
-    assert np.isfinite(an.stratified_perm_test(Minf, COUNTS20)["T"]) and an.stratified_perm_test(Minf, COUNTS20)["p"] == 1.0
+    for kw in ({}, {"exact_max": 50_000}):
+        rinf = an.stratified_perm_test(Minf, COUNTS20, **kw)
+        assert np.isfinite(rinf["T"]) and rinf["p"] == 1.0
 
     # pure label effect: passes the unstratified test, FAILS the stratified one
     for sd, name in ((0.0, "exact"), (0.02, "noisy")):
