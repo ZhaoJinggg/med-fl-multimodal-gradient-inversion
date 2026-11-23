@@ -18,9 +18,9 @@ VICTIMS = [(s, v) for s in range(1, 6) for v in range(4)]  # 20 victims, 4 per s
 TMP = tempfile.gettempdir()
 
 
-def rows(mod, protocol, u, values, condition="recovered", m0=np.nan):
-    return [{"seed": s, "victim": v, "protocol": protocol, "u": u, "condition": condition, "modality": mod,
-             "value": float(x), "m0": m0} for (s, v), x in zip(VICTIMS, values)]
+def rows(mod, protocol, u, values, condition="recovered", m0=np.nan, batch=8):
+    return [{"seed": s, "victim": v, "protocol": protocol, "u": u, "batch": batch, "condition": condition,
+             "modality": mod, "value": float(x), "m0": m0} for (s, v), x in zip(VICTIMS, values)]
 
 
 def noise(sd, n=len(VICTIMS)):
@@ -33,63 +33,71 @@ def cross_rows(values, protocol="fedavg", u=1, condition="recovered", off=0.5, o
     for i, (vs, vv) in enumerate(VICTIMS):
         for j, (ws, wv) in enumerate(VICTIMS):
             a = values[i] if i == j else off + rng.normal(0, off_sd)
-            out.append({"group": group if group is not None else f"{protocol}{u}{condition}", "protocol": protocol,
+            out.append({"group": group if group is not None else f"{protocol}{u}{condition}B{batch}", "protocol": protocol,
                         "condition": condition, "u": u, "batch": batch, "v_seed": vs, "v_victim": vv,
                         "w_seed": ws, "w_victim": wv, "diagonal": i == j, "A": a})
     return out
 
 
 def synthetic():
-    """Image: m0 = 0.5, FedAvg u=1 mean ~0.9 (f = 1 per 0.4 of A). Text: m0 = 0.2, FedAvg u=1 mean ~0.8."""
+    """The closed design. Text (batch 8): m0 = 0.2, FedAvg u=1 mean ~0.8 (f = 1 per 0.6 of ROUGE-L).
+    Image (u = 1): m0 = 0.5, FedAvg batch 2 mean ~0.85 (reference cell; f = 1 per 0.35 of A)."""
     R, C = [], []
-    base_img = 0.9 + noise(0.02)
-    R += rows("image", "fedavg", 1, base_img, m0=0.5)
-    C += cross_rows(base_img, u=1)
-    img = {1: base_img}
-    for k, u in enumerate([2, 4, 8, 16], 1):  # known decline of 0.05 A per level -> H1 image supported
-        img[u] = base_img - 0.05 * k + noise(0.01)
-        R += rows("image", "fedavg", u, img[u])
-        C += cross_rows(img[u], u=u)
+    # text, FedAvg: u=2 exactly equal to u=1 (zero differences); u=8 at the floor (ROUGE-L ~ m0)
     base_txt = 0.8 + noise(0.02)
     txt = {1: base_txt, 2: base_txt, 4: base_txt + noise(0.004), 8: 0.2 + noise(0.01), 16: base_txt - 0.3 + noise(0.01)}
-    for u, v in txt.items():  # u=2 exactly equal (zero differences); u=8 at the floor (ROUGE-L ~ m0)
+    for u, v in txt.items():
         R += rows("text", "fedavg", u, v, m0=0.2)
-    # H2a: oracle == recovered at u=1 (zero width), oracle ~ recovered at u=4 -> supported
-    R += rows("image", "fedavg", 1, base_img, condition="oracle")
-    R += rows("image", "fedavg", 4, img[4] + noise(0.002), condition="oracle")
-    # H2b: no text lower by 0.1 A (0.25 f) at both levels -> supported
-    R += rows("image", "fedavg", 1, base_img - 0.1 + noise(0.01), condition="notext")
-    R += rows("image", "fedavg", 4, img[4] - 0.1 + noise(0.01), condition="no_text")
     for u in (4, 8):
-        # H3: SCAFFOLD equal within noise; text u=8 is a floor cell -> decided on u=4 only
-        R += rows("image", "scaffold", u, img[u] + noise(0.002))
+        # H3: SCAFFOLD equal within noise; u=8 is a floor cell -> decided on u=4 only
         R += rows("text", "scaffold", u, txt[u] + noise(0.002))
-        # H4: FedProx image slightly higher (supported); text u=4 lower by 0.12 ROUGE (f -0.2) -> contradicted
-        R += rows("image", "fedprox", u, img[u] + 0.02 + noise(0.002))
+        # H4: FedProx lower by 0.12 ROUGE-L at u=4 (f -0.2) -> contradicted
         R += rows("text", "fedprox", u, txt[u] - (0.12 if u == 4 else 0) + noise(0.002))
-        # H5: FedBN image lower by 0.1 A (significant), text equal -> supported
-        R += rows("image", "fedbn", u, img[u] - 0.1 + noise(0.01))
+        # H5b: FedBN equal -> supported
         R += rows("text", "fedbn", u, txt[u] + noise(0.002))
-    s1 = 0.4 + noise(0.02)  # secondary metric: H1 reported only
-    R += rows("image_ssim", "fedavg", 1, s1)
-    for u in (2, 4, 8, 16):
-        R += rows("image_ssim", "fedavg", u, s1 - 0.01 * u + noise(0.01))
+    # text at the other batch sizes and the exact reference, as src/score_text.py labels them: in no test
+    R += rows("text", "fedavg", 1, base_txt + 0.1, condition="B2", batch=2, m0=0.2)
+    for r in rows("text", "fedavg", 1, base_txt + 0.15, condition="exact_B4", m0=0.2):
+        r.pop("batch")
+        R.append(r)
+    # image, FedAvg, recovered text: known decline with the batch size -> H6 supported
+    b2 = 0.85 + noise(0.02)
+    img = {1: b2 + 0.08 + noise(0.01), 2: b2, 4: b2 - 0.15 + noise(0.01), 8: b2 - 0.25 + noise(0.01)}
+    for b, v in img.items():
+        R += rows("image", "fedavg", 1, v, m0=0.5, batch=b)
+        C += cross_rows(v, batch=b)
+    # H2a: oracle == recovered at batch 2 (zero width) -> supported; H2b: no text lower by 0.1 A -> supported
+    R += rows("image", "fedavg", 1, b2, condition="oracle", batch=2)
+    R += rows("image", "fedavg", 1, b2 - 0.1 + noise(0.01), condition="no_text", batch=2)
+    # H5a: FedBN lower by 0.1 A at batches 1 and 2 -> supported
+    for b in (1, 2):
+        R += rows("image", "fedbn", 1, img[b] - 0.1 + noise(0.01), batch=b)
+    # a batch-8 oracle cell (calibration-style): in no test
+    R += rows("image", "fedavg", 1, img[8], condition="oracle", batch=8)
+    s1 = 0.6 + noise(0.02)  # secondary metric: reported only
+    for b in (1, 2, 4, 8):
+        R += rows("image_ssim", "fedavg", 1, s1 - 0.01 * b + noise(0.005), batch=b)
     return pd.DataFrame(R), pd.DataFrame(C)
 
 
-def run(df, cross, gate="unknown", m0=None):
+def run(df, cross, m0=None, stratify=True):
     p, pc = os.path.join(TMP, "test_analyze_tidy.csv"), os.path.join(TMP, "test_analyze_cross.csv")
     df.to_csv(p, index=False)
     cross.to_csv(pc, index=False)
     d = an.load_tidy([p])
     c = an.load_cross([pc])
-    d, info = an.add_f(d, m0 or {}, c)
-    comp, dec, ps = an.evaluate(d, gate, c, m0 or {}, info)
+    cache = {}
+    d, info = an.add_f(d, m0 or {}, c, stratify, cache)
+    comp, dec, ps = an.evaluate(d, c, m0 or {}, info, stratify, cache)
     return d, info, comp, dec, ps
 
 
 def decision(dec, h, mod):
     return dec[(dec.hypothesis == h) & (dec.modality == mod)].decision.iloc[0]
+
+
+def reason(dec, h, mod):
+    return dec[(dec.hypothesis == h) & (dec.modality == mod)].reason.iloc[0]
 
 
 def check(dec, exp):
@@ -113,12 +121,12 @@ def label_matrix(counts, same=0.7, other=0.5, sd=0.0, diag=None, g=None):
     return M
 
 
-def cross_from_matrix(M, counts, protocol="fedavg", u=1, condition="recovered", M_lab=None):
+def cross_from_matrix(M, counts, protocol="fedavg", u=1, condition="recovered", M_lab=None, batch=8):
     out = []
     for i, (vs, vv) in enumerate(VICTIMS):
         for j, (ws, wv) in enumerate(VICTIMS):
-            out.append({"group": f"{protocol}{u}{condition}", "protocol": protocol, "condition": condition, "u": u,
-                        "batch": 8, "v_seed": vs, "v_victim": vv, "v_n_abnormal": counts[i], "w_seed": ws, "w_victim": wv,
+            out.append({"group": f"{protocol}{u}{condition}B{batch}", "protocol": protocol, "condition": condition, "u": u,
+                        "batch": batch, "v_seed": vs, "v_victim": vv, "v_n_abnormal": counts[i], "w_seed": ws, "w_victim": wv,
                         "w_n_abnormal": counts[j], "diagonal": i == j, "A": M[i, j],
                         "A_lab": M_lab[i, j] if M_lab is not None else np.nan})
     return out
@@ -141,8 +149,13 @@ def reg_pairs(nv=20, B=8, beta=0.3, delta=0.0, sd=0.02, seed=1):
     return pd.DataFrame(rows), counts
 
 
+def no_ref_cross(cross):
+    """The cross rows without those of the image reference cell (FedAvg, u = 1, batch 2, recovered)."""
+    return cross[~((cross.protocol == "fedavg") & (cross.u == 1) & (cross.batch == 2) & (cross.condition == "recovered"))]
+
+
 def label_controls():
-    """Second review: stratified permutation test, sign-flip test, label regression, text precondition, tidy."""
+    """Stratified permutation test, sign-flip test, label regression, reference-cell preconditions, tidy."""
     # stratified enumeration counts
     assert an.n_stratified_perms([0, 0, 1, 1, 1, 2, 3]) == 12
     assert an.n_stratified_perms([5, 5, 5, 5, 9, 9, 9]) == 144
@@ -219,49 +232,57 @@ def label_controls():
     P2, _ = reg_pairs(beta=0.0, delta=0.0)
     assert abs(an.label_regression(P2, n_boot=200)["slope"]) < 0.01
 
-    # `test`: pure label effect in the reference cell -> stratified test fails -> image "not tested";
-    # --no-stratify (unstratified) passes it
+    # `test`: pure label effect in the image reference cell (batch 2) -> the stratified test fails -> image f not
+    # computed, H2a and H2b "not decidable"; H5a at batch 2 has the same control cell (not decidable) and is
+    # decided on batch 1; H6 does not depend on the floor. --no-stratify (unstratified) passes the cell.
     df, cross = synthetic()
-    cross = cross[~((cross.protocol == "fedavg") & (cross.u == 1))]
-    ref_vals = df[(df.modality == "image") & (df.protocol == "fedavg") & (df.u == 1) & (df.condition == "recovered")].value.to_numpy()
+    rest = no_ref_cross(cross)
+    ref_vals = df[(df.modality == "image") & (df.protocol == "fedavg") & (df.u == 1) & (df.batch == 2)
+                  & (df.condition == "recovered")].value.to_numpy()
     MLr = label_matrix(COUNTS20, same=ref_vals.mean(), other=0.5, sd=0.0)
     np.fill_diagonal(MLr, ref_vals.mean())
-    cross_l = pd.concat([cross, pd.DataFrame(cross_from_matrix(MLr, COUNTS20))])
+    cross_l = pd.concat([rest, pd.DataFrame(cross_from_matrix(MLr, COUNTS20, batch=2))])
     d_s, info_s, comp_s, dec_s, _ = run(df, cross_l)
     assert info_s["image"]["ref_passes"] is False and info_s["image"]["ref_test_p_unstratified"] <= 0.05
-    assert info_s["image"]["ref_test_method"].startswith("stratified") and (dec_s[dec_s.modality == "image"].decision == "not tested").all()
-    p, pc = os.path.join(TMP, "test_analyze_tidy.csv"), os.path.join(TMP, "test_analyze_cross.csv")
-    d = an.load_tidy([p])
-    c = an.load_cross([pc])
-    d, info_u = an.add_f(d, {}, c, stratify=False)
+    assert info_s["image"]["ref_test_method"].startswith("stratified") and d_s[d_s.modality == "image"].f.isna().all()
+    check(dec_s, {("H2a", "image"): "not decidable", ("H2b", "image"): "not decidable", ("H5a", "image"): "supported",
+                  ("H6", "image"): "supported", ("H3", "text"): "supported"})
+    assert "not decidable" in reason(dec_s, "H5a", "image")
+    _, info_u, _, dec_u, _ = run(df, cross_l, stratify=False)
     assert info_u["image"]["ref_passes"] and "unstratified: --no-stratify" in info_u["image"]["ref_test_method"]
-    # a true image effect at u=1 with strata: passes the stratified test, floor columns filled for u=4 (no strata there)
+    assert decision(dec_u, "H2a", "image") == "supported"
+    # a true image effect in the reference cell with strata: passes the stratified test (enumerated: 552,960)
     MDr = label_matrix(COUNTS20, same=0.55, other=0.5, sd=0.02)
     np.fill_diagonal(MDr, ref_vals)
-    cross_d = pd.concat([cross, pd.DataFrame(cross_from_matrix(MDr, COUNTS20))])
+    cross_d = pd.concat([rest, pd.DataFrame(cross_from_matrix(MDr, COUNTS20, batch=2))])
     _, info_d, comp_d, dec_d, _ = run(df, cross_d)
     assert info_d["image"]["ref_passes"] and info_d["image"]["ref_test_p"] <= 1e-4 and info_d["image"]["ref_n_contrib"] == 19
-    assert decision(dec_d, "H3", "image") == "supported"
-    assert comp_d[(comp_d.modality == "image") & (comp_d.hypothesis == "H3")].floor_p_unstratified.notna().all()
+    check(dec_d, {("H2a", "image"): "supported", ("H2b", "image"): "supported", ("H5a", "image"): "supported"})
+    h2 = comp_d[comp_d.hypothesis.isin(["H2a", "H2b"])]
+    assert h2.floor_p_unstratified.notna().all() and h2.floor_method.str.startswith("stratified").all()
 
-    # text reference precondition: text FedAvg u=1 at its m0 -> text f not computed, H2-H5 text "not tested", H1 text tested
+    # text reference cell (FedAvg u=1, batch 8) at its m0 -> text f not computed; H3, H4, H5b "not decidable";
+    # H1 (ROUGE-L, no floor rule) is still decided; the image hypotheses are untouched
     df_t = df.copy()
-    sel = (df_t.modality == "text") & (df_t.protocol == "fedavg") & (df_t.u == 1)
+    sel = (df_t.modality == "text") & (df_t.protocol == "fedavg") & (df_t.u == 1) & (df_t.batch == 8) & (df_t.condition == "recovered")
     df_t.loc[sel, "value"] = 0.2 + rng.normal(0, 0.01, sel.sum())
-    d_t, info_t, comp_t, dec_t, _ = run(df_t, pd.concat([cross, pd.DataFrame(cross_from_matrix(MDr, COUNTS20))]))
+    d_t, info_t, comp_t, dec_t, _ = run(df_t, cross)
     assert info_t["text"]["ref_passes"] is False and d_t[d_t.modality == "text"].f.isna().all()
-    for h in ("H3", "H4", "H5"):
-        assert decision(dec_t, h, "text") == "not tested", (h, decision(dec_t, h, "text"))
-    assert decision(dec_t, "H1", "text") != "not tested" and decision(dec_t, "H3", "overall") == "supported"
+    for h in ("H3", "H4", "H5b"):
+        assert decision(dec_t, h, "text") == "not decidable", (h, decision(dec_t, h, "text"))
+    assert decision(dec_t, "H1", "text") == "not supported" and decision(dec_t, "H2a", "image") == "supported"
     assert info_d["text"]["ref_passes"] is True
 
-    # tidy-images: batch sizes other than 8 get B<k>
+    # tidy-images: batch and condition as scored
     ps = os.path.join(TMP, "tidy_scores.csv")
     pd.DataFrame({"seed": [1, 1, 1, 1], "victim": [0, 0, 0, 0], "protocol": "fedavg", "u": 1, "batch": [8, 4, 8, 2],
-                  "condition": ["recovered", "recovered", "oracle", "oracle"], "A": 0.9, "A_mismatched": 0.5,
+                  "condition": ["recovered", "recovered", "oracle", "notext"], "A": 0.9, "A_mismatched": 0.5,
                   "file": ["a", "b", "c", "d"], "n_abnormal": [3, 1, 3, 1]}).to_csv(ps, index=False)
     t = an.tidy_from_image_scores(ps)
-    assert list(t.condition) == ["recovered", "B4", "oracle", "oracle_B2"] and "n_abnormal" in t
+    assert list(t.condition) == ["recovered", "recovered", "oracle", "none"] and list(t.batch) == [8, 4, 8, 2] and "n_abnormal" in t
+    pt = os.path.join(TMP, "tidy_scores_tidy.csv")
+    t.to_csv(pt, index=False)
+    assert len(an.load_tidy([pt])) == 4  # four different cells: no duplicate
 
     # gate command with A_lab, strata and --regression (7 gate clients, file names repeat across "dirs")
     P7, cnt7 = reg_pairs(nv=7, beta=0.3, delta=0.1, seed=3)
@@ -289,6 +310,161 @@ def label_controls():
                                                                      "reg_offdiag_slope", "reg_offdiag_excess", "p_strat", "n_perm_strat")})
 
 
+def hypothesis_table():
+    """The decision rules of the closed design (H1, H2a, H2b, H3, H4, H5a, H5b, H6) on synthetic cells."""
+    # condition labels of src/score_text.py: the batch part moves to the batch column
+    assert an.split_batch("b4") == ("", 4) and an.split_batch("oracle_b2") == ("oracle", 2)
+    assert an.split_batch("exact_b4") == ("exact", 4) and an.split_batch("no_text") == ("no_text", None)
+    assert an.split_batch("bnlocal") == ("bnlocal", None) and an.split_batch("exact_b1_opti") == ("exact_opti", 1)
+
+    df, cross = synthetic()
+    d, info, comp, dec, ps = run(df, cross)
+    pd.set_option("display.width", 250, "display.max_columns", 30)
+    print(info)
+    print(comp[["hypothesis", "modality", "u", "batch", "n", "mean_diff", "ci_low", "ci_high", "lower_bound", "p", "p_holm",
+                "significant", "within_margin", "outside_margin", "floor_p", "decidable", "mixed_agrees"]].round(4).to_string(index=False))
+    print(dec.to_string(index=False))
+    # cells: "B2" -> recovered at batch 2; "exact_B4" -> exact at batch 4; neither enters a test
+    tb = d[d.modality == "text"]
+    assert len(tb[(tb.batch == 2) & (tb.condition == "recovered")]) == 20 and len(tb[(tb.batch == 4) & (tb.condition == "exact")]) == 20
+    # reference cells and f
+    ref_i = d[(d.modality == "image") & (d.protocol == "fedavg") & (d.u == 1) & (d.batch == 2) & (d.condition == "recovered")]
+    ref_t = d[(d.modality == "text") & (d.protocol == "fedavg") & (d.u == 1) & (d.batch == 8) & (d.condition == "recovered")]
+    assert abs(ref_i.f.mean() - 1) < 1e-12 and abs(info["image"]["m0"] - 0.5) < 1e-12 and info["image"]["ref_passes"] is True
+    assert abs(ref_t.f.mean() - 1) < 1e-12 and abs(info["text"]["m0"] - 0.2) < 1e-12 and info["text"]["ref_passes"] is True
+    assert info["image"]["ref_cell"] == "fedavg u=1 B=2" and info["text"]["ref_cell"] == "fedavg u=1 B=8"
+    assert d[d.modality == "image_ssim"].f.isna().all()
+    check(dec, {("H1", "text"): "not supported", ("H2a", "image"): "supported", ("H2b", "image"): "supported",
+                ("H3", "text"): "supported", ("H4", "text"): "contradicted", ("H5a", "image"): "supported",
+                ("H5b", "text"): "supported", ("H6", "image"): "supported", ("H6", "image_ssim"): "reported, decides nothing"})
+    assert set(dec.hypothesis) == set(an.PLANNED) and "overall" not in set(dec.modality)
+    # exactly the planned comparisons, in the planned cells
+    n_prim = comp[comp.modality.isin(an.PRIMARY)].groupby("hypothesis").size().to_dict()
+    assert n_prim == an.PLANNED, n_prim
+    assert set(comp[comp.hypothesis == "H1"].u) == {2, 4, 8, 16} and (comp[comp.hypothesis == "H1"].batch == 8).all()
+    assert set(comp[(comp.hypothesis == "H6") & (comp.modality == "image")].batch) == {2, 4, 8}
+    assert set(comp[(comp.hypothesis == "H5a") & (comp.modality == "image")].batch) == {1, 2}
+    assert (comp[comp.hypothesis.isin(["H2a", "H2b"])].batch == 2).all()
+    assert (comp[comp.hypothesis.isin(["H1", "H5a", "H6"])].metric == "value").all()
+    assert (comp[comp.hypothesis.isin(["H2a", "H2b", "H3", "H4", "H5b"])].metric == "f").all()
+    # text floor cell (u=8): Wilcoxon of ROUGE-L vs m0 fails -> not decidable, leaves the families
+    t8 = comp[(comp.modality == "text") & (comp.u == 8) & comp.hypothesis.isin(["H3", "H4", "H5b"])]
+    assert len(t8) == 3 and (~t8.decidable.astype(bool)).all() and (t8.floor_p > 0.05).all()
+    assert "not decidable" in reason(dec, "H3", "text")
+    # image floor tests use the permutation test of the FedAvg control cell and pass
+    i5 = comp[(comp.modality == "image") & (comp.hypothesis == "H5a")]
+    assert i5.floor_method.str.startswith("permutation").all() and (i5.floor_p <= 0.05).all() and i5.significant.all()
+    assert list(i5.control) == ["fedavg u=1 B=1", "fedavg u=1 B=2"]
+    # H1 and H6 have no floor rule
+    h1 = comp[comp.hypothesis == "H1"]
+    assert h1.decidable.astype(bool).all() and h1.p_holm.notna().all() and h1.floor_p.isna().all()
+    assert h1[h1.u == 2].p.iloc[0] == 1.0
+    h6 = comp[(comp.hypothesis == "H6") & (comp.modality == "image")]
+    assert h6.decidable.astype(bool).all() and h6.significant.all() and h6.floor_p.isna().all()
+    # H2a: zero differences -> zero-width interval within the margin; H2b: one comparison, Holm = p
+    z = comp[comp.hypothesis == "H2a"].iloc[0]
+    assert z.ci_low == 0 and z.ci_high == 0 and z.within_margin
+    b = comp[comp.hypothesis == "H2b"].iloc[0]
+    assert b.p == b.p_holm and b.significant
+
+    # image FedAvg batch 1 at chance in its cross matrix -> H5a at batch 1 not decidable, decided on batch 2;
+    # H6 (batch 1 is its reference level) does not depend on the floor
+    at1 = (cross.protocol == "fedavg") & (cross.batch == 1)
+    c2 = pd.concat([cross[~at1], pd.DataFrame(cross_rows(0.45 + noise(0.01), batch=1))])
+    _, _, comp2, dec2, _ = run(df, c2)
+    e1 = comp2[(comp2.modality == "image") & (comp2.hypothesis == "H5a")]
+    assert list(e1.decidable.astype(bool)) == [False, True], e1[["batch", "floor_p"]]
+    assert e1.p_holm.isna().tolist() == [True, False] and e1.p_holm.iloc[1] == e1.p.iloc[1]  # family of one
+    assert decision(dec2, "H5a", "image") == "supported" and "not decidable" in reason(dec2, "H5a", "image")
+    assert decision(dec2, "H6", "image") == "supported"
+
+    # image reference cell (batch 2) at chance -> image f not computed; H2a and H2b not decidable;
+    # H5a decided on batch 1 alone; H6 and the text hypotheses untouched
+    c3 = pd.concat([no_ref_cross(cross), pd.DataFrame(cross_rows(0.45 + noise(0.01), batch=2))])
+    d3, info3, comp3, dec3, _ = run(df, c3)
+    assert info3["image"]["ref_passes"] is False and d3[d3.modality == "image"].f.isna().all()
+    check(dec3, {("H2a", "image"): "not decidable", ("H2b", "image"): "not decidable", ("H5a", "image"): "supported",
+                 ("H6", "image"): "supported", ("H3", "text"): "supported", ("H4", "text"): "contradicted"})
+    # no cross matrix at all: no image floor test can be run and no point rule replaces it
+    d3b, info3b, comp3b, dec3b, _ = run(df, cross[cross.batch == 99])
+    assert info3b["image"]["ref_passes"] is None and d3b[d3b.modality == "image"].f.isna().all()
+    check(dec3b, {("H2a", "image"): "not decidable", ("H5a", "image"): "undecided", ("H6", "image"): "supported"})
+    assert comp3b[comp3b.hypothesis == "H5a"].floor_method.str.startswith("not tested").all()
+
+    # both text control cells at the floor -> H3 undecided
+    df4 = df.copy()
+    sel = (df4.modality == "text") & (df4.protocol == "fedavg") & (df4.u == 4)
+    df4.loc[sel, "value"] = 0.2 + rng.normal(0, 0.01, sel.sum())
+    _, _, _, dec4, _ = run(df4, cross)
+    assert decision(dec4, "H3", "text") == "undecided" and decision(dec4, "H5b", "text") == "undecided"
+
+    # equal groups, large noise -> inconclusive; a real shift beyond the margin -> contradicted
+    df5 = df.copy()
+    sel = (df5.modality == "text") & (df5.protocol == "scaffold")
+    df5.loc[sel, "value"] += rng.normal(0, 0.1, sel.sum())
+    _, _, _, dec5, _ = run(df5, cross)
+    assert decision(dec5, "H3", "text") == "inconclusive", decision(dec5, "H3", "text")
+    df6 = df.copy()
+    df6.loc[sel, "value"] += 0.1
+    _, _, _, dec6, _ = run(df6, cross)
+    assert decision(dec6, "H3", "text") == "contradicted"
+    # H4 inconclusive: lower bound below -0.05 but the upper end of the two-sided interval above -0.05
+    df7 = df.copy()
+    sel7 = (df7.modality == "text") & (df7.protocol == "fedprox") & (df7.u == 4)
+    fa4 = df7[(df7.modality == "text") & (df7.protocol == "fedavg") & (df7.u == 4)].value.to_numpy()
+    zz = np.linspace(-1, 1, len(VICTIMS))
+    zz = (zz - zz.mean()) / zz.std(ddof=1)  # standardized offsets: f difference mean -0.05, sd 0.1
+    den = info["text"]["denominator"]
+    df7.loc[sel7, "value"] = fa4 + den * (-0.05 + 0.1 * zz)
+    _, _, comp7, dec7, _ = run(df7, cross)
+    r7 = comp7[(comp7.hypothesis == "H4") & (comp7.u == 4)].iloc[0]
+    assert abs(r7.mean_diff + 0.05) < 1e-9 and abs(r7.sd_diff - 0.1) < 1e-9 and r7.lower_bound < -0.05 < r7.ci_high
+    assert decision(dec7, "H4", "text") == "inconclusive"
+    # H4 supported: FedProx equal to FedAvg at u=4
+    df7b = df.copy()
+    df7b.loc[sel7, "value"] = fa4 + rng.normal(0, 0.002, len(fa4))
+    assert decision(run(df7b, cross)[3], "H4", "text") == "supported"
+
+    # H2b third outcome and "undecided"
+    df8 = df.copy()
+    s8 = (df8.modality == "image") & (df8.batch == 2) & (df8.condition == "no_text")
+    df8.loc[s8, "value"] = ref_i.value.to_numpy() + rng.normal(0, 0.002, s8.sum())
+    assert decision(run(df8, cross)[3], "H2b", "image") == "text does not matter within the margin"
+    df8.loc[s8, "value"] = ref_i.value.to_numpy() + rng.normal(0, 0.1, s8.sum())
+    assert decision(run(df8, cross)[3], "H2b", "image") == "undecided"
+    # H5a not supported if FedBN lowers nothing at batch 2; H6 not supported if batch 4 does not decline
+    df9 = df.copy()
+    s9 = (df9.modality == "image") & (df9.protocol == "fedbn") & (df9.batch == 2)
+    df9.loc[s9, "value"] = ref_i.value.to_numpy() + rng.normal(0, 0.01, s9.sum())
+    s9b = (df9.modality == "image") & (df9.protocol == "fedavg") & (df9.batch == 4) & (df9.condition == "recovered")
+    b1 = df9[(df9.modality == "image") & (df9.protocol == "fedavg") & (df9.batch == 1) & (df9.condition == "recovered")].value.to_numpy()
+    df9.loc[s9b, "value"] = b1 + rng.normal(0, 0.01, s9b.sum())
+    dec9 = run(df9, cross)[3]
+    assert decision(dec9, "H5a", "image") == "not supported" and decision(dec9, "H6", "image") == "not supported"
+    # a hypothesis with fewer comparisons than planned says so
+    dec10 = run(df[~((df.modality == "text") & (df.u == 16))], cross)[3]
+    assert "plans 4" in reason(dec10, "H1", "text")
+    # --m0 override
+    _, info11, _, _, _ = run(df, cross, m0={"text": 0.0})
+    assert info11["text"]["m0"] == 0.0 and info11["text"]["m0_source"] == "cli"
+    # cells table: every cell once, floor tests of the primary modalities
+    ct = an.cells_table(d, an.load_cross([os.path.join(TMP, "test_analyze_cross.csv")]))
+    assert not ct.duplicated(["modality", "protocol", "u", "batch", "condition"]).any()
+    row = lambda mod, proto, u, b, cond="recovered": ct[(ct.modality == mod) & (ct.protocol == proto) & (ct.u == u)
+                                                        & (ct.batch == b) & (ct.condition == cond)].iloc[0]
+    assert row("text", "fedavg", 8, 8).above_floor == False and row("text", "fedavg", 4, 8).above_floor == True  # noqa: E712
+    assert row("image", "fedavg", 1, 8).above_floor == True and abs(row("image", "fedavg", 1, 2).mean_f - 1) < 1e-12  # noqa: E712
+    assert row("image", "fedbn", 1, 1).floor_method.startswith("not tested")  # no cross matrix in the synthetic data
+    # ANOVA: the text of the protocol experiment only
+    tab = an.anova(d)
+    print(tab.round(4).to_string(index=False))
+    assert set(tab.modality) == {"text"} and tab[tab.source == "C(protocol)"].p.iloc[0] < 1e-6 and tab.n_rows.iloc[0] == 160
+    # the command itself
+    out = os.path.join(TMP, "test_analyze_out")
+    an.main(["test", os.path.join(TMP, "test_analyze_tidy.csv"), "--cross", os.path.join(TMP, "test_analyze_cross.csv"), "--out", out])
+    assert all(os.path.exists(os.path.join(out, n + ".csv")) for n in ("cells", "comparisons", "decisions", "per_seed", "anova"))
+
+
 def main():
     # unit checks
     assert np.allclose(an.holm([0.01, 0.04, 0.03]), [0.03, 0.06, 0.06])
@@ -312,99 +488,7 @@ def main():
     Mn = 0.5 + rng.normal(0, 0.05, (8, 8))
     print("null 8x8 permutation p:", round(an.perm_test(Mn)[1], 3))
 
-    df, cross = synthetic()
-    d, info, comp, dec, ps = run(df, cross)
-    pd.set_option("display.width", 250, "display.max_columns", 30)
-    print(info)
-    print(comp[["hypothesis", "modality", "u", "n", "mean_diff", "ci_low", "ci_high", "lower_bound", "p", "p_holm",
-                "significant", "within_margin", "outside_margin", "floor_p", "decidable", "mixed_agrees"]].round(4).to_string(index=False))
-    print(dec.to_string(index=False))
-    ref = d[(d.modality == "image") & (d.protocol == "fedavg") & (d.u == 1) & (d.condition == "recovered")]
-    assert abs(ref.f.mean() - 1) < 1e-12 and abs(info["image"]["m0"] - 0.5) < 1e-12 and info["image"]["ref_passes"]
-    check(dec, {("H1", "image"): "supported", ("H1", "text"): "not supported", ("H1", "image_ssim"): "reported, decides nothing",
-                ("H2a", "image"): "supported", ("H2b", "image"): "supported",
-                ("H3", "image"): "supported", ("H3", "text"): "supported", ("H3", "overall"): "supported",
-                ("H4", "image"): "supported", ("H4", "text"): "contradicted", ("H4", "overall"): "contradicted",
-                ("H5", "image"): "supported", ("H5", "text"): "supported", ("H5", "overall"): "supported"})
-    # text floor cell (u=8): Wilcoxon of ROUGE-L vs m0 fails -> not decidable, leaves the families
-    t8 = comp[(comp.modality == "text") & (comp.u == 8) & comp.hypothesis.isin(["H3", "H4", "H5"])]
-    assert len(t8) == 3 and (~t8.decidable.astype(bool)).all() and (t8.floor_p > 0.05).all()
-    assert "not decidable" in dec[(dec.hypothesis == "H3") & (dec.modality == "text")].reason.iloc[0]
-    # image floor tests use the permutation test and pass
-    i4 = comp[(comp.modality == "image") & (comp.hypothesis == "H3")]
-    assert i4.floor_method.str.startswith("permutation").all() and (i4.floor_p <= 0.05).all()
-    # H1 has no floor rule
-    h1t = comp[(comp.hypothesis == "H1") & (comp.modality == "text")]
-    assert h1t.decidable.astype(bool).all() and h1t.p_holm.notna().all()
-    assert h1t[h1t.u == 2].p.iloc[0] == 1.0
-    z = comp[(comp.hypothesis == "H2a") & (comp.u == 1)].iloc[0]
-    assert z.ci_low == 0 and z.ci_high == 0 and z.within_margin
-    assert comp[(comp.hypothesis == "H1") & (comp.modality == "image")].significant.all()
-    assert comp[(comp.hypothesis == "H5") & (comp.modality == "image")].significant.all()
-
-    # image FedAvg u=8 at chance in its cross matrix (diagonal ~ off-diagonal) -> image u=8 comparisons not decidable
-    c2 = cross[~((cross.protocol == "fedavg") & (cross.u == 8))]
-    c2 = pd.concat([c2, pd.DataFrame(cross_rows(0.45 + noise(0.01), u=8))])
-    _, _, comp2, dec2, _ = run(df, c2)
-    e8 = comp2[(comp2.modality == "image") & (comp2.u == 8) & comp2.hypothesis.isin(["H3", "H4", "H5"])]
-    assert len(e8) == 3 and (~e8.decidable.astype(bool)).all(), e8[["hypothesis", "floor_p"]]
-    assert decision(dec2, "H3", "image") == "supported"  # decided on u=4 alone
-    assert "not decidable" in dec2[(dec2.hypothesis == "H3") & (dec2.modality == "image")].reason.iloc[0]
-
-    # reference cell at chance -> image f not computed, every image decision "not tested"
-    c3 = cross[~((cross.protocol == "fedavg") & (cross.u == 1))]
-    c3 = pd.concat([c3, pd.DataFrame(cross_rows(0.45 + noise(0.01), u=1))])
-    d3, info3, comp3, dec3, _ = run(df, c3)
-    assert info3["image"]["ref_passes"] is False and d3[d3.modality == "image"].f.isna().all()
-    assert (dec3[dec3.modality == "image"].decision == "not tested").all()
-    assert decision(dec3, "H3", "overall") == "supported"  # text part only
-    assert decision(dec3, "H1", "image_ssim") == "not tested"  # literal: every image decision
-
-    # every text FedAvg cell at the floor -> H3 text undecided; overall decided on the image part
-    df4 = df.copy()
-    sel = (df4.modality == "text") & (df4.protocol == "fedavg") & (df4.u == 4)
-    df4.loc[sel, "value"] = 0.2 + rng.normal(0, 0.01, sel.sum())
-    _, _, _, dec4, _ = run(df4, cross)
-    assert decision(dec4, "H3", "text") == "undecided" and decision(dec4, "H3", "overall") == "supported"
-
-    # equal groups, large noise -> inconclusive; a real shift beyond the margin -> contradicted
-    df5 = df.copy()
-    sel = (df5.modality == "image") & (df5.protocol == "scaffold")
-    df5.loc[sel, "value"] += rng.normal(0, 0.1, sel.sum())
-    _, _, _, dec5, _ = run(df5, cross)
-    assert decision(dec5, "H3", "image") == "inconclusive", decision(dec5, "H3", "image")
-    df6 = df.copy()
-    df6.loc[sel, "value"] += 0.1
-    _, _, _, dec6, _ = run(df6, cross)
-    assert decision(dec6, "H3", "image") == "contradicted" and decision(dec6, "H3", "overall") == "contradicted"
-    # H4 inconclusive: lower bound below -0.05 but upper end above -0.05
-    df7 = df.copy()
-    sel7 = (df7.modality == "image") & (df7.protocol == "fedprox")
-    zz = np.linspace(-1, 1, len(VICTIMS))
-    zz = (zz - zz.mean()) / zz.std(ddof=1)  # fixed standardized offsets: f difference mean -0.05, sd 0.1
-    df7.loc[sel7, "value"] += -0.04 + 0.04 * np.tile(zz, sel7.sum() // len(VICTIMS))
-    _, _, comp7, dec7, _ = run(df7, cross)
-    assert decision(dec7, "H4", "image") == "inconclusive", comp7[comp7.hypothesis == "H4"][["lower_bound", "ci_high"]]
-
-    # H2b third outcome
-    df8 = df.copy()
-    for u in (1, 4):
-        rec = df8[(df8.modality == "image") & (df8.protocol == "fedavg") & (df8.u == u) & (df8.condition == "recovered")]
-        s8 = (df8.modality == "image") & (df8.u == u) & df8.condition.isin(["notext", "no_text"])
-        df8.loc[s8, "value"] = rec.value.to_numpy() + rng.normal(0, 0.002, s8.sum())
-    _, _, _, dec8, _ = run(df8, cross)
-    assert decision(dec8, "H2b", "image") == "text does not matter within the margin"
-
-    # calibration gate not informative -> every image decision undecided (gate)
-    _, _, _, dec9, _ = run(df, cross, gate="not_informative")
-    assert (dec9[dec9.modality.str.startswith("image")].decision == "undecided (gate)").all()
-    # --m0 override
-    _, info10, _, _, _ = run(df, cross, m0={"text": 0.0})
-    assert info10["text"]["m0"] == 0.0 and info10["text"]["m0_source"] == "cli"
-    # ANOVA
-    tab = an.anova(d)
-    print(tab.round(4).to_string(index=False))
-    assert set(tab.modality) == {"image", "text"} and tab[(tab.modality == "image") & (tab.source == "C(protocol)")].p.iloc[0] < 1e-6
+    hypothesis_table()
 
     # calibration gate function
     g1 = an.gate(M, top1=[1, 1, 0, 1, 1, 1, 1])

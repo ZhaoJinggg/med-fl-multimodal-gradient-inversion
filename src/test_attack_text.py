@@ -334,7 +334,7 @@ if RUN("T4"):
     c_all = pd.read_csv(os.path.join(a.out, "an_all", "comparisons.csv"))
     c_main = pd.read_csv(os.path.join(a.out, "an_main", "comparisons.csv"))
     hyps = sorted(set(c_all.hypothesis))
-    ok = c_all.equals(c_main) and set(c_all.n) == {n_v} and hyps == ["H1", "H3", "H4", "H5"]
+    ok = c_all.equals(c_main) and set(c_all.n) == {n_v} and hyps == ["H1", "H3", "H4", "H5b"]
     report("T4d analyze.py test accepts the tidy CSV; exact / B = 4 rows never enter a comparison", ok,
            f"{len(c_all)} comparisons ({hyps}), n per comparison {sorted(set(c_all.n))}, identical with and without "
            f"the extra rows: {c_all.equals(c_main)}")
