@@ -19,7 +19,7 @@ are its first B batch reports, truncated to 64 GPT-2 tokens and decoded, as in a
                      PairData.split("val") + split("test")), truncated like the victims' texts, matched to the
                      victim's B texts. Ties in frequency: first occurrence in the pairs file (Counter order).
   m0_single          the earlier definition (reference): the single most frequent report of the seed's client
-                     data without the victim's batch, repeated for every text (src/text_baseline.py).
+                     data without the victim's batch, repeated for every text (src/calibration/text_baseline.py).
   rougeL_mismatched  the mismatched control: the texts recovered for every OTHER victim of the same cell (same
                      directory, protocol, u, batch, exact flag and file-name suffix = cell suffix + tag; with
                      --mismatch-scope cell, across directories, e.g. over all seeds), each set matched to this
@@ -116,7 +116,7 @@ class TextData:
             rows = self.victim_rows(seed, victim, batch)
             vset = set(rows)
             truth = [self.text(i) for i in rows]
-            # earlier zero point (src/text_baseline.py): same pool order and tie rule
+            # earlier zero point (src/calibration/text_baseline.py): same pool order and tie rule
             pool = [i for c in split["clients"].values() for i in (self.index[s] for s in c) if i not in vset]
             frequent, count = collections.Counter(self.text(i) for i in pool).most_common(1)[0]
             m0_single = float(np.mean([self.scorer.score(self.text(i), frequent)["rougeL"].fmeasure for i in sorted(vset)]))

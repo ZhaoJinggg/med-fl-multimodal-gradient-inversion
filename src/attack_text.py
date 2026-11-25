@@ -22,7 +22,7 @@ both read with train_fl.load_aux from the directory of --global (round --aux-rou
 in the file name global_round{r}.pt). With --scaffold-option I the attack input is the single-step view
 protocols.option1_update (dc + c_k, treated as a u = 1 update; not a cell of the paper).
 With --proto fedavg and the default options the update is bit for bit the one of the former
-victim_update (src/test_attack_text.py).
+victim_update (tests/test_attack_text.py).
 
 The result JSON (one per victim) records the cell (seed, proto, u, batch, exact, protocol options,
 thresholds, broadcast model) and, next to ROUGE-L, the auxiliary text metrics of the paper (ROUGE-1,
@@ -119,7 +119,7 @@ def victim_update(model, x, ids, mask, y, u, lr_img, lr_txt, proto, exact=False,
       logit0  logits of the first step (client side; used only for the calibration record, never by a rule)
       view    {"attack_input": ..., "u_view": number of steps the input stands for (u; 1 for Option I)}
     proto holds c and c_k under scaffold; bn_local is the victim's local BN state (FedBN, bn_stats local).
-    With fedavg this is the former victim_update bit for bit (src/test_attack_text.py).
+    With fedavg this is the former victim_update bit for bit (tests/test_attack_text.py).
     The CPU random state: the former victim_update built a fresh FusionModel(), whose weight initialization
     draws from the CPU generator; DAGER's get_layer_decomp (torch.svd_lowrank) draws from it afterwards.
     One FusionModel() is built and discarded here so that the search sees the same random state."""

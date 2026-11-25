@@ -39,7 +39,7 @@ Definitions (paper, Section "Evaluation Metrics"):
     A_lab_mismatched(v) = mean over w != v of A_lab(v, w) (same partners as A_mismatched).
   * A_matched / top1_matched / top1pct_matched (old rule, for the record): reconstructions matched to the
     originals by the one-to-one assignment maximizing mean SSIM (Hungarian), each original ranked by SSIM to
-    its matched reconstruction (identical to src/identify.py). This assignment is still used for SSIM, PSNR
+    its matched reconstruction (identical to src/calibration/identify.py). This assignment is still used for SSIM, PSNR
     and LPIPS, which are means over the matched pairs.
   * SSIM: skimage.metrics.structural_similarity(data_range=1, gaussian_weights=True, sigma=1.5,
     use_sample_covariance=False), computed by a vectorized torch implementation (`SSIMPool`): skimage filters
